@@ -1,5 +1,9 @@
 import json
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_run import check, parse_run, stop_efforts
 
