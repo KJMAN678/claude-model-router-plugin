@@ -1,0 +1,11 @@
+{
+  "name": "kjman678-plugins",
+  "owner": { "name": "KJMAN678" },
+  "plugins": [
+    {
+      "name": "model-router",
+      "source": "./",
+      "description": "タスクの種類と難易度に応じて、ターンごとにモデルと effort を切り替える"
+    }
+  ]
+}

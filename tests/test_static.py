@@ -26,6 +26,13 @@ class StaticTest(unittest.TestCase):
         data = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(data["name"], "model-router")
 
+    def test_marketplace_lists_this_plugin(self):
+        market = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+        plugin = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(market["name"], "kjman678-plugins")
+        self.assertTrue(market["owner"]["name"])
+        self.assertEqual([(p["name"], p["source"]) for p in market["plugins"]], [(plugin["name"], "./")])
+
     def test_skills_frontmatter(self):
         dirs = {p.name for p in (ROOT / "skills").iterdir() if p.is_dir()}
         self.assertEqual(dirs, set(SKILLS))
