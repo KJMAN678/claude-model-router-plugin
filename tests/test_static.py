@@ -16,6 +16,7 @@ class StaticTest(unittest.TestCase):
         self.assertEqual(market["name"], "kjman678-plugins")
         self.assertTrue(market["owner"]["name"])
         self.assertEqual([(p["name"], p["source"]) for p in market["plugins"]], [(plugin["name"], "./")])
+        self.assertEqual(market["plugins"][0]["version"], plugin["version"])
 
     def test_no_skills_dir(self):
         self.assertFalse((ROOT / "skills").exists())

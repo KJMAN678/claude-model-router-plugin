@@ -109,13 +109,15 @@ subagent はこの会話を読めない。依頼文だけで作業できるよ�
 | Claude が Skill ツールで `use-sonnet-high`（`model: sonnet`）を呼ぶ | auto | 切り替わらない。skill の後も opus-5-5 に送られた |
 | 同上 | default | 切り替わらない（2 回目の呼び出しは「読み込み済み」として省略された） |
 | Agent ツールを `model: sonnet`、`effort: medium` で呼ぶ | default | 切り替わる。subagent は sonnet-5-5 に送られ、effort は medium だった |
+| Agent ツールを `model: opus`、`effort: xhigh` で呼ぶ | default | 切り替わる。opus-5-5 に送られ、effort は xhigh だった |
+| Agent ツールを `model: fable`、`effort: high` で呼ぶ | default | 切り替わる。fable-5-2 に送られ、effort は high だった |
 
 - skill を呼ぶと、システムプロンプトの名乗り（「Sonnet 5.5 で動いている」）とコミット署名だけは書き換わった。実際の送り先は変わらなかった。そのため、モデルの自己申告では切り替わったかどうかを判断できない。
 - ユーザーが `/` で skill を呼んだ場合は、CLI 2.1.119 で初期化時のモデルが haiku に変わった（改訂前に確認）。自動の振り分けには使えないので、この設計では使わない。
 
 ### 7.2 未検証のリスク
 
-- **opus / fable と xhigh を Agent ツールの引数で渡した場合。** 確認したのは sonnet / medium だけ。e2e の probe（8 章）で確かめる。
+- **auto モードでの Agent ツールの切り替え。** デスクトップアプリで確認したのは default モードだけ。e2e の probe（8 章）で確かめる。
 - **CLI（`claude -p`）での動作。** 確認したのはデスクトップアプリだけ。e2e の probe で確かめる。
 - **判定と依頼文の質。** Sonnet が表どおりに判定し、5.4 を満たす依頼文を書けるか。e2e の routing（8 章）で判定を確かめる。依頼文の質は運用しながら見る。
 - **費用。** 振り分けが起きたターンでは、Sonnet の判定と依頼文作成、subagent の作業、Sonnet による結果の伝達が加わる。一方、subagent は会話全体を読まずに依頼文から始めるため、skill 方式で心配していた「モデルを変えると会話全体をキャッシュなしで読み直す」問題は起きない。どちらが安いかは測っていない（9 章）。
