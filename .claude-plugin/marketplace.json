@@ -5,7 +5,7 @@
     {
       "name": "model-router",
       "source": "./",
-      "description": "タスクの種類と難易度に応じて、ターンごとにモデルと effort を切り替える"
+      "description": "タスクの種類と難易度に応じて、モデルと effort を指定した subagent に作業を任せる"
     }
   ]
 }
