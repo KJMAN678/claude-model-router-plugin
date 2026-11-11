@@ -1,6 +1,6 @@
 # model-router プラグイン 設計
 
-- 日付: 2026-11-10
+- 日付: 2026-11-10（2026-11-11 改訂: skill 方式から subagent 方式へ変更。理由は 7 章）
 - 元の要望: [docs/intent.md](../../intent.md)
 
 ## 1. 目的
@@ -10,51 +10,41 @@ Claude Code で、タスクの種類と難易度に応じてモデルと effort 
 ## 2. 前提と制約
 
 - プラグインからメインセッションのモデル・effort は直接変更できない。hook の `PreModelSwitch` は切替の許可・拒否しかできず、プラグインの `settings.json` は `model` / `effortLevel` を受け付けない。
-- skill の frontmatter の `model` / `effort` は、その skill を呼んだターンの残りにだけ効く。次のターンはセッションのモデルに戻る。
-- frontmatter の `effort` は 1 つの値しか書けない。effort に範囲を持たせたい場合は、組み合わせごとに skill を分ける。
+- Claude が Skill ツールで呼んだ skill の frontmatter の `model` は効かない（7.1 で確認済み）。そのため skill ではなく subagent を使う。
+- Agent ツールは呼び出しごとに `model`（alias: `sonnet` / `opus` / `haiku` / `fable`）と `effort`（`low` / `medium` / `high` / `xhigh` / `max`）を受け付ける。`effort` 引数は Claude Code v2.1.292 以上が必要。
+- 組織の `availableModels` で禁止されたモデルを指定すると、Claude Code が別のモデルに置き換え、警告を表示する（sub-agents.md）。
 - メインセッションは Sonnet で動かすことを前提にする。プラグインからは設定できないため、README で `/model sonnet` を案内する。
 
-参照: https://code.claude.com/docs/en/skills.md 、 https://code.claude.com/docs/en/hooks.md 、 https://code.claude.com/docs/en/model-config.md 、 https://code.claude.com/docs/en/plugins-reference.md
+参照: https://code.claude.com/docs/en/sub-agents.md 、 https://code.claude.com/docs/en/hooks.md 、 https://code.claude.com/docs/en/model-config.md 、 https://code.claude.com/docs/en/plugins-reference.md
 
 ## 3. 構成
 
 ```
 model-router/                      # リポジトリのルート = プラグインのルート
-├── .claude-plugin/plugin.json     # {"name": "model-router", ...}
+├── .claude-plugin/
+│   ├── plugin.json                # {"name": "model-router", ...}
+│   └── marketplace.json           # kjman678-plugins
 ├── hooks/
 │   ├── hooks.json                 # SessionStart（matcher なし）で routing.md を注入
 │   └── routing.md                 # 振り分け表・判定基準・ルール（Sonnet 向けの指示）
-├── skills/
-│   ├── use-sonnet-high/SKILL.md   # model: sonnet  effort: high
-│   ├── use-opus-medium/SKILL.md   # model: opus    effort: medium
-│   ├── use-opus-high/SKILL.md     # model: opus    effort: high
-│   ├── use-opus-xhigh/SKILL.md    # model: opus    effort: xhigh
-│   ├── use-fable-high/SKILL.md    # model: fable   effort: high
-│   └── use-fable-xhigh/SKILL.md   # model: fable   effort: xhigh
-├── tests/e2e.sh
+├── tests/
 └── README.md
 ```
+
+モデル×effort ごとのファイル（skill や `agents/*.md`）は置かない。組み合わせは routing.md の表に書き、Sonnet が Agent ツールの引数として渡す。
 
 ### 3.1 hooks.json
 
 `SessionStart` に matcher を付けない command hook を 1 つ置く。startup / resume / clear / compact のどれで起動しても、`${CLAUDE_PLUGIN_ROOT}/hooks/routing.md` の内容を `additionalContext` として出力する。上限は 10,000 文字なので、routing.md はそれより短く保つ。
 
-### 3.2 skill（6 個）
-
-それぞれの skill は、モデルと effort を切り替えるスイッチの役割だけを持つ。どのタスクでどれを使うかは routing.md に書く。
-
-- frontmatter: `name`、`description`（「model-router の振り分けで選ばれたときに呼ぶ」旨）、`model`、`effort`
-- 本文（短く）:
-  - 「このターンは <モデル> / <effort> で実行中。ユーザーの依頼を続けよ」
-  - 「自分が <モデル> でなければ、その旨を 1 行表示し、現在のモデルで続けよ」
-
 ## 4. データの流れ
 
 1. セッション開始・compact・resume・clear のたびに、hook が routing.md を注入する。
 2. ユーザーがメッセージを送ると、メインの Sonnet が作業前に 1 回だけ判定する。
-3. Sonnet が判定結果を 1 行で表示し（例: `→ Opus / high（設計・調査 2）`）、該当する `use-*` skill を Skill ツールで呼ぶ。
-4. そのターンの残りは、skill で指定したモデルと effort で実行される。
-5. 次のターンはセッションのモデル（Sonnet）に戻り、2 から繰り返す。
+3. Sonnet が判定結果を 1 行で表示する（例: `→ Opus / high（設計・調査 2）`）。
+4. 判定が「メインで実行」なら、Sonnet がそのまま作業する。
+5. それ以外なら、Sonnet が Agent ツールを `subagent_type: general-purpose`、表の `model` と `effort`、依頼文（5.4）で呼ぶ。
+6. subagent の結果が返ったら、Sonnet がユーザーに伝える。
 
 ## 5. 振り分けルール（routing.md の内容）
 
@@ -62,14 +52,14 @@ model-router/                      # リポジトリのルート = プラグイ�
 
 | 種類 | 1 | 2 | 3 | 4 |
 |--|--|--|--|--|
-| 設計・調査 | use-opus-medium | use-opus-high | use-fable-high | use-fable-xhigh |
-| 実装 | use-sonnet-high | use-opus-high | use-opus-xhigh | — |
-| レビュー | use-opus-xhigh | use-fable-xhigh | — | — |
+| 設計・調査 | opus / medium | opus / high | fable / high | fable / xhigh |
+| 実装 | メインで実行 | opus / high | opus / xhigh | — |
+| レビュー | opus / xhigh | fable / xhigh | — | — |
 
 intent.md との対応:
 
 - 設計・調査: シンプル = 段階 1〜2（Opus medium〜high）、複雑 = 段階 3〜4（Fable high〜xhigh）
-- 実装: シンプル = 段階 1（Sonnet high）、複雑 = 段階 2〜3（Opus high〜xhigh）
+- 実装: シンプル = 段階 1（Sonnet high。メインの Sonnet がそのまま実行する。subagent に渡すと文脈を依頼文に書き直す手間と費用がかかるため）、複雑 = 段階 2〜3（Opus high〜xhigh）
 - レビュー: 段階 1〜2（Opus〜Fable、xhigh）
 
 ### 5.2 難易度の判定基準
@@ -82,46 +72,67 @@ intent.md との対応:
 
 1. ユーザーのメッセージを受けたら、作業を始める前に 1 回だけ判定する。
 2. 判定結果を 1 行で表示する。
-3. 雑談や短い質問など表のどれにも当てはまらない場合は、skill を呼ばずに現在のモデルのまま答える。
+3. 雑談や短い質問など表のどれにも当てはまらない場合は、subagent を使わずにメインで答える。
 4. ユーザーがモデルや effort を明示した場合（「Fable で」「もっと重く」など）は、その指定を優先する。
-5. 自分が Sonnet でない場合は、最初の 1 回だけ `/model sonnet` を勧める。振り分けはそのまま続ける。
+5. 「続けて」「そこを直して」など、直前に subagent に任せた作業の続きは、同じ種類と段階を引き継ぐ。SendMessage が使える環境なら同じ subagent に送り、使えなければ新しく Agent ツールを呼ぶ（その場合は直前の結果の要点も依頼文に入れる）。
+6. subagent の作業中は、メインで同じ作業をしない。
+7. 自分が Sonnet でない場合は、最初の 1 回だけ `/model sonnet` を勧める。振り分けはそのまま続ける。
+
+### 5.4 subagent への依頼文
+
+subagent はこの会話を読めない。依頼文だけで作業できるように、次を書く。
+
+- ユーザーの依頼（原文のまま）
+- 会話の中で決まったこと・制約・関係するファイルのパス
+- 何を返してほしいか（設計なら結論と理由、実装なら変更したファイルと確認結果、レビューなら指摘の一覧）
+- ユーザーに確かめないと決められないことが出たら、作業を止めて質問として返すこと（subagent はユーザーに直接質問できない）
 
 ## 6. 失敗時の扱い
 
 | 起きうること | 対処 |
 |--|--|
-| Claude が自分で呼んだ skill ではモデルが切り替わらない（未検証のリスク、7 章） | 実装の最初に e2e で確かめる。切り替わらなければ、6 個の skill を同じモデル×effort の subagent（`agents/*.md`）に置き換える設計に戻る |
-| skill の `model` が無視される（組織の `availableModels` 制限、プランで Fable が使えない など） | skill 本文の指示で 1 行表示し、現在のモデルで続ける |
-| 権限モードが auto のとき（plan モードで classifier が動いているときも同じ）、auto モードが対応していないモデルは使われない（skills.md に明記） | 同上。実装の最初に、auto モードでも e2e の probe を実行して確かめる |
-| メインセッションが Sonnet ではない | ルール 5 で案内する。振り分けはそのまま動く |
+| 指定のモデルが使えない（`availableModels` 制限、プランで Fable が使えない など） | Claude Code が別のモデルに置き換えて警告を出す（2 章）。プラグイン側では何もしない |
+| CLI が v2.1.292 より古く、`effort` 引数が使えない | README に必要な版を書く。どうしても古い版で使う場合は、組み合わせごとに `agents/*.md`（frontmatter に `model` と `effort`）を置く方式に切り替える |
+| 依頼文に必要な文脈が足りず、subagent の結果がずれる | 5.4 の項目を routing.md に書く。結果がずれたら、ユーザーが追加の指示を出し、ルール 5 で同じ subagent に続けてもらう |
+| メインセッションが Sonnet ではない | ルール 7 で案内する。振り分けはそのまま動く |
 | compact などでルールが消える | SessionStart に matcher を付けず、どの起動元でも注入し直す |
 | 判定を誤った | 判定結果を 1 行表示しているので、ユーザーがルール 4 で上書きできる |
 
-## 7. 未検証のリスク
+## 7. 検証の記録と未検証のリスク
 
-- **Claude が自分で（Skill ツール経由で）呼んだ skill の `model` / `effort` が、そのターンに効くか。** ユーザーが `/` で呼んだ場合に `model` が効くことは確認済み（CLI 2.1.119、初期化時のモデルが haiku になった）。Claude が自分で呼んだ場合は、CLI が未ログインだったため確認できていない。
-- 確認方法: 実装計画の最初のタスクとして `tests/e2e.sh` を作って実行し、Skill ツールを呼んだ後の assistant メッセージの `model` を見る。
-- 結果が否定的だった場合は、6 章の代替案（subagent 方式）に切り替え、この spec を改訂する。
-- **コストが増える場面がある。** 次の 2 つが重なる。
-  - 振り分けが起きたターンでは、まず Sonnet が判定のために 1 回呼ばれ、その後に指定のモデルが動く。
-  - プロンプトキャッシュはモデルごとに分かれている（Anthropic API の仕様）。そのため、モデルが切り替わったターンの最初のリクエストでは、会話全体をキャッシュなしで読み直す。effort を途中で変えた場合も、メッセージ部分のキャッシュが無効になる。
-  - 会話が長いほど影響が大きい。短いタスクを Opus や Fable から Sonnet に下ろして得られる節約と、どちらが大きいかはまだ測っていない。測定は対象外（9 章）とし、運用してみて費用が増えたと感じたら検討する。
-- **skill の effort が実際に効いたか。** e2e では、テスト専用の hook（Stop イベントの入力にある `effort.level`）で確かめる。そこに skill の effort が反映されない場合は、その結果をこの章に追記する。
+### 7.1 確認済み（2026-11-11、デスクトップアプリの Code タブ、Claude Code 2.1.321、メインは Opus 5.5）
+
+確認には、セッション記録（`~/.claude/projects/<project>/<session>.jsonl`）の assistant 行にある `requestedModel`（送ったモデル）、`message.model`（応答したモデル）、`effort` を使った。
+
+| 試したこと | 権限モード | 結果 |
+|--|--|--|
+| Claude が Skill ツールで `use-sonnet-high`（`model: sonnet`）を呼ぶ | auto | 切り替わらない。skill の後も opus-5-5 に送られた |
+| 同上 | default | 切り替わらない（2 回目の呼び出しは「読み込み済み」として省略された） |
+| Agent ツールを `model: sonnet`、`effort: medium` で呼ぶ | default | 切り替わる。subagent は sonnet-5-5 に送られ、effort は medium だった |
+
+- skill を呼ぶと、システムプロンプトの名乗り（「Sonnet 5.5 で動いている」）とコミット署名だけは書き換わった。実際の送り先は変わらなかった。そのため、モデルの自己申告では切り替わったかどうかを判断できない。
+- ユーザーが `/` で skill を呼んだ場合は、CLI 2.1.119 で初期化時のモデルが haiku に変わった（改訂前に確認）。自動の振り分けには使えないので、この設計では使わない。
+
+### 7.2 未検証のリスク
+
+- **opus / fable と xhigh を Agent ツールの引数で渡した場合。** 確認したのは sonnet / medium だけ。e2e の probe（8 章）で確かめる。
+- **CLI（`claude -p`）での動作。** 確認したのはデスクトップアプリだけ。e2e の probe で確かめる。
+- **判定と依頼文の質。** Sonnet が表どおりに判定し、5.4 を満たす依頼文を書けるか。e2e の routing（8 章）で判定を確かめる。依頼文の質は運用しながら見る。
+- **費用。** 振り分けが起きたターンでは、Sonnet の判定と依頼文作成、subagent の作業、Sonnet による結果の伝達が加わる。一方、subagent は会話全体を読まずに依頼文から始めるため、skill 方式で心配していた「モデルを変えると会話全体をキャッシュなしで読み直す」問題は起きない。どちらが安いかは測っていない（9 章）。
 
 ## 8. テスト
 
-1. `claude plugin validate .` が通ること。
-2. `tests/e2e.sh`: 種類と難易度ごとの代表プロンプトを 8 本ほど用意し、それぞれに期待する skill 名を対応させる。`claude -p --plugin-dir . --model sonnet --output-format stream-json --verbose` で実行し、次の 2 点を確かめる。
-   - 呼ばれた skill が期待どおりか（判定の精度）
-   - skill を呼んだ後の assistant メッセージの `model` が期待どおりか（切り替えの効果）
-   - テスト専用の Stop hook で記録した `effort.level` が、skill の effort と一致するか
-   - プロンプトが実在するファイルを前提にできるよう、各ケースは小さなフィクスチャ（git リポジトリ）をコピーした一時ディレクトリで実行する。
-   - 切り替えの probe は、既定の権限モードと auto モードの両方で実行する。加えて、デスクトップアプリの Code タブでも 1 回、手動で確かめる。
-3. e2e.sh はログイン済みで新しい版の CLI を必要とし、1 回の実行で API を 8〜16 回ほど呼ぶ。そのため CI には入れず、手動で実行する。
+1. `python3 -m unittest discover tests` と `claude plugin validate .` が通ること。
+2. `tests/e2e.sh`（ログイン済みの v2.1.292 以上の CLI が必要。API を呼ぶので CI には入れず、手動で実行する）。`claude -p --plugin-dir . --model sonnet --output-format stream-json --verbose` で実行し、`tests/check_run.py` で次を判定する。
+   - Agent ツールに渡した `model` / `effort` が期待どおりか（判定の精度）。期待値は `opus-high` のような組み合わせ、または subagent を使わないことを表す `main`。
+   - subagent の assistant メッセージ（stream-json で `parent_tool_use_id` が付いたもの）の `model` が、渡した `model` と一致するか（切り替えの効果）。
+   - probe: 「Agent ツールを model=opus, effort=xhigh で呼ぶ」「model=fable, effort=high で呼ぶ」の 2 ケース。既定の権限モードと auto モードの両方で実行する。
+   - routing: 種類と難易度ごとの代表プロンプト 8 本ほど。各ケースは小さなフィクスチャ（git リポジトリ）をコピーした一時ディレクトリで実行する。
+3. subagent の実際の effort は stream-json に出ないため、e2e では渡した値だけを確かめる。実際に効くことは 7.1 で一度確かめた。
 
 ## 9. 対象外
 
-- Haiku による判定（アプローチ B / C）。Sonnet による判定の精度が足りないと分かったときに検討する。
+- Haiku による判定。Sonnet による判定の精度が足りないと分かったときに検討する。
 - 判定結果の記録や統計。
-- 振り分けによって費用が増えたか減ったかの測定（7 章）。
+- 振り分けによって費用が増えたか減ったかの測定（7.2）。
 - 振り分け表のユーザー設定化（routing.md を直接編集すれば変えられる）。

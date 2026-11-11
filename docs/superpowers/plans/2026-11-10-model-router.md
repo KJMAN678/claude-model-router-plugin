@@ -2,240 +2,146 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** メインの Sonnet がタスクの種類と難易度を判定し、モデル×effort ごとの skill を呼んで、そのターンだけモデルと effort を切り替える Claude Code プラグインを作る。
+**Goal:** メインの Sonnet がタスクの種類と難易度を判定し、Agent ツールを表の `model` / `effort` で呼んで作業を subagent に任せる Claude Code プラグインを作る。
 
-**Architecture:** SessionStart hook が `hooks/routing.md`（振り分けルール）をコンテキストに注入する。Sonnet はそのルールに従って `use-<model>-<effort>` skill を 1 つ呼ぶ。skill の frontmatter の `model` / `effort` が、そのターンの残りに効く。
+**Architecture:** SessionStart hook が `hooks/routing.md`（振り分けルール）をコンテキストに注入する。Sonnet はそのルールに従い、「メインで実行」か「Agent ツールを `model` と `effort` を付けて呼ぶ」かを選ぶ。モデル×effort ごとのファイルは置かない。
 
-**Tech Stack:** Claude Code プラグイン（Markdown + JSON）、bash、python3 標準ライブラリのみ（テスト用）
+**Tech Stack:** Claude Code プラグイン（Markdown + JSON）、zsh、python3 標準ライブラリのみ（テスト用）
 
 **Spec:** [docs/superpowers/specs/2026-11-10-model-router-design.md](../specs/2026-11-10-model-router-design.md)
+
+## 改訂履歴
+
+- 2026-11-11: skill 方式から subagent 方式へ変更（spec 7.1）。旧 Task 1（skill 6 個）と旧 Task 2（skill 用の判定器と probe）はコミット済みだが、この計画で置き換える。フィクスチャ（`tests/fixture/`）、`e2e.sh` の `run_case` の骨組み、marketplace 対応はそのまま使う。
 
 ## Global Constraints
 
 - プラグイン名: `model-router`。リポジトリのルートがプラグインのルート。
-- skill は次の 6 個で、名前・`model`・`effort` は固定: `use-sonnet-high`（sonnet/high）、`use-opus-medium`（opus/medium）、`use-opus-high`（opus/high）、`use-opus-xhigh`（opus/xhigh）、`use-fable-high`（fable/high）、`use-fable-xhigh`（fable/xhigh）。
-- `model` には alias（`sonnet` / `opus` / `fable`）を使う。完全なモデル ID は書かない。
+- 組み合わせは次の 5 個と「メインで実行」だけ: `opus/medium`、`opus/high`、`opus/xhigh`、`fable/high`、`fable/xhigh`。
+- Agent ツールの呼び出しは `subagent_type: general-purpose`。`model` には alias（`opus` / `fable`）を使う。
 - SessionStart hook には matcher を付けない（startup / resume / clear / compact のすべてで注入する）。
 - `routing.md` は 10,000 文字未満（`additionalContext` の上限）。
 - プラグイン内のパスは `${CLAUDE_PLUGIN_ROOT}` で参照する。
-- 外部依存は増やさない（bash と python3 標準ライブラリのみ）。
-- `tests/e2e.sh` は実際に API を呼ぶ。サンドボックス内では `claude -p` が動かない（このセッションで確認済み）ため、e2e はユーザーがターミナルで実行する。CI には入れない。
+- 外部依存は増やさない（zsh と python3 標準ライブラリのみ）。
+- `tests/e2e.sh` は実際に API を呼び、v2.1.292 以上の CLI が必要（ユーザーの CLI は 2026-11-11 時点で 2.1.261 なので `claude update` が要る）。e2e はユーザーがターミナルで実行する。CI には入れない。
 
 ## Review Focus
 
-1. **メインセッションが Sonnet 以外（例: Opus）で起動された場合** — 振り分けはそのまま動き、`/model sonnet` を勧める表示が 1 回出るべき。→ Task 4 の e2e `main-opus` で確かめる。
-2. **「続けて」などの文脈依存プロンプト** — 直前のタスクの種類を引き継いで判定されるべき。→ Task 4 の e2e `continue` で確かめる（2 ターン、`--continue` を使う）。
-3. **ユーザーがモデルを明示した場合（「Fable で」）** — 難易度の判定より明示が優先されるべき。→ Task 4 の cases.tsv に含める。
+1. **メインセッションが Sonnet 以外（例: Opus）で起動された場合** — 振り分けはそのまま動き、`/model sonnet` を勧める表示が 1 回出るべき。→ Task 4 の e2e `main-opus`。
+2. **「続けて」などの文脈依存プロンプト** — 直前の種類と段階を引き継ぐべき。→ Task 4 の e2e `continue`（2 ターン、`--continue` を使う）。
+3. **ユーザーがモデルを明示した場合（「Fable で」）** — 明示が優先されるべき。→ Task 4 の cases.tsv。
 4. **compact / resume の後** — ルールが再注入されるべき。→ Task 3 の静的テストで、hooks.json に matcher が無いことを確かめる。
-5. **routing.md を編集して上限を超えた場合** — 注入時に黙って切り捨てられるのを防ぐ。→ Task 3 の静的テストで 10,000 文字未満であることを確かめる。
-
-effort は stream-json には出ないので、テスト専用の Stop hook が受け取る入力 JSON の `effort.level` で確かめる（Task 2）。値が取れない場合は「effort unknown」と表示し、FAIL にはしない。
+5. **routing.md を編集して上限を超えた場合** — 黙って切り捨てられるのを防ぐ。→ Task 3 の静的テストで 10,000 文字未満を確かめる。
+6. **依頼文（spec 5.4）** — subagent が会話を読めない前提で書かれているか。→ Task 4 Step 3 で、e2e の出力から Agent ツールの `prompt` を数件読んで確かめる。
 
 ---
 
-### Task 1: プラグインの骨組みと 6 個の skill
+### Task 1: skill を削除する
 
 **Files:**
-- Create: `.claude-plugin/plugin.json`
-- Create: `skills/use-{sonnet-high,opus-medium,opus-high,opus-xhigh,fable-high,fable-xhigh}/SKILL.md`
-- Test: `tests/test_static.py`
+- Delete: `skills/`（6 個の SKILL.md）
+- Modify: `tests/test_static.py`（`SKILLS` と `test_skills_frontmatter` を削除し、`skills/` が無いことを確かめるテストに置き換える）
+- Modify: `.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json`（description を「タスクの種類と難易度に応じて、モデルと effort を指定した subagent に作業を任せる」に変える）
 
-**Interfaces:**
-- Produces: skill 名 `model-router:use-<model>-<effort>`（6 個）。frontmatter は `name` / `description` / `model` / `effort`。
-- Produces: `tests/test_static.py` 内の定数 `SKILLS: dict[str, tuple[str, str]]`（skill 名 → (model, effort)）。Task 3 で再利用する。
-
-- [ ] **Step 1: 失敗するテストを書く**
-
-`tests/test_static.py`（unittest、frontmatter は `---` で挟まれた `key: value` 行を自前で読む）:
+- [ ] **Step 1: テストを書き換える**
 
 ```python
-SKILLS = {
-    "use-sonnet-high": ("sonnet", "high"),
-    "use-opus-medium": ("opus", "medium"),
-    "use-opus-high": ("opus", "high"),
-    "use-opus-xhigh": ("opus", "xhigh"),
-    "use-fable-high": ("fable", "high"),
-    "use-fable-xhigh": ("fable", "xhigh"),
-}
-
-def test_plugin_name(self):
-    assert json.load(open(".claude-plugin/plugin.json"))["name"] == "model-router"
-
-def test_skills_frontmatter(self):
-    # skills/ 直下のディレクトリが SKILLS のキーと完全一致すること
-    # 各 SKILL.md の name == ディレクトリ名、model / effort が SKILLS の値と一致すること
-    # description が空でないこと
+def test_no_skills_dir(self):
+    self.assertFalse((ROOT / "skills").exists())
 ```
 
 - [ ] **Step 2: テストが失敗することを確かめる**
 
 Run: `python3 -m unittest tests/test_static.py -v`
-Expected: FAIL（`.claude-plugin/plugin.json` が無い）
+Expected: `test_no_skills_dir` が FAIL
 
-- [ ] **Step 3: plugin.json と 6 個の SKILL.md を作る**
+- [ ] **Step 3: `skills/` を削除し、description を変える**
 
-`plugin.json`: `{"name": "model-router", "version": "0.1.0", "description": "タスクの種類と難易度に応じて、ターンごとにモデルと effort を切り替える"}`
-
-各 SKILL.md（`<M>` はモデル表示名 Sonnet / Opus / Fable、`<E>` は effort）:
-
-```markdown
----
-name: use-<model>-<effort>
-description: model-router の振り分けで「<M> / <E>」と判定したときに呼ぶ。このターンの残りを <M> / <E> で実行する。
-model: <model>
-effort: <effort>
----
-このターンは <M> / <E> で実行中です。ユーザーの依頼をそのまま続けてください。
-
-あなたが <M> でない場合は、「model-router: <M> に切り替わりませんでした（現在のモデルで続行します）」と 1 行だけ表示し、現在のモデルで続けてください。
-```
+Run: `git rm -r skills`
 
 - [ ] **Step 4: テストが通ることを確かめる**
 
 Run: `python3 -m unittest tests/test_static.py -v`
-Expected: PASS（2 tests）
-
-Run: `claude plugin validate .`
-Expected: エラーなし。サンドボックスで動かない場合は、その旨を記録してユーザーに実行を依頼する。
+Expected: PASS（3 tests）
 
 - [ ] **Step 5: コミット**
 
 ```bash
-git add .claude-plugin skills tests/test_static.py
-git commit -m "feat: プラグインの骨組みとモデル×effort の skill 6 個を追加"
+git add -A skills tests/test_static.py .claude-plugin
+git commit -m "refactor: skill 方式をやめ、skill を削除する"
 ```
 
 ---
 
-### Task 2: e2e の判定器と切り替えの検証（ゲート）
+### Task 2: 判定器を Agent ツール用に書き換え、probe で切り替えを確かめる（ゲート）
 
-spec 7 章のリスクを確かめるタスク。**ここで切り替えが確認できなければ、以降のタスクには進まず、ユーザーに報告して spec を改訂する**（subagent 方式に置き換える）。
+spec 7.2 の「opus / fable と xhigh」「CLI での動作」を確かめる。**ここで切り替えが確認できなければ、以降のタスクには進まず、ユーザーに報告する。**
 
 **Files:**
-- Create: `tests/check_run.py`
-- Create: `tests/test_check_run.py`
-- Create: `tests/e2e.sh`
-- Create: `tests/fixture/README.md`（誤字「インストール」→「インストーる」を 1 か所含む短い README）
-- Create: `tests/fixture/src/user.js`（`function getUser(id)` と、それを呼ぶ箇所を 1 つ含む）
+- Modify: `tests/check_run.py`
+- Modify: `tests/test_check_run.py`
+- Modify: `tests/e2e.sh`
 
 **Interfaces:**
-- Consumes: Task 1 の skill 名。
-- Produces: `python3 tests/check_run.py <run.jsonl> <allowed> [<hooks.jsonl>]` を実行すると、PASS / FAIL と理由を 1 行表示し、PASS なら exit 0、FAIL なら exit 1 で終わる。`<allowed>` はカンマ区切りの skill 名（接頭辞 `model-router:` は付けない）か `none`。`<hooks.jsonl>` はテスト専用 hook が記録した入力 JSON（1 行 1 イベント）。
-- Produces: `tests/e2e.sh <mode>`。`<mode>` は `probe` / `routing` / `all`。各ケースの PASS / FAIL を 1 行ずつ表示し、最後に `passed N/M` を出す。FAIL が 1 件でもあれば exit 1 で終わる。
+- Produces: `python3 tests/check_run.py <run.jsonl> <allowed>`。PASS / FAIL と理由を 1 行表示し、PASS なら exit 0、FAIL なら exit 1。`<allowed>` はカンマ区切りの組み合わせ（`opus-high,opus-xhigh` など）か `main`。
+- Produces: `tests/e2e.sh <mode>`（`probe` / `routing` / `all`）。各ケースの PASS / FAIL を 1 行ずつ表示し、最後に `passed N/M`。FAIL があれば exit 1。
 
 - [ ] **Step 1: 判定器の失敗するテストを書く**
 
-`tests/test_check_run.py`（unittest）。stream-json の行を合成して、次の 3 つを検証する。
-- `check_run.parse_run(lines: list[str]) -> Run`
-- `check_run.stop_efforts(hook_lines: list[str]) -> list[str]`：`hook_event_name == "Stop"` の行の `effort.level` を順に返す
-- `check_run.check(run: Run, allowed: list[str], efforts: list[str] | None = None) -> tuple[bool, str]``Run` は `skills: list[str]`（呼ばれた skill 名。接頭辞を除いたもの）、`models_after_skill: list[str]`、`all_models: list[str]` を持つ dataclass。
+`tests/test_check_run.py` を書き換える。stream-json の行を組み立てるヘルパー:
+- `agent_call(model, effort)`: メインの assistant 行。`content` に `{"type": "tool_use", "name": "Agent", "input": {"subagent_type": "general-purpose", "model": ..., "effort": ..., "prompt": "..."}}`。`parent_tool_use_id` は null。
+- `sub_msg(model)`: subagent の assistant 行。`parent_tool_use_id` に任意の文字列、`message.model` に完全なモデル ID（例 `claude-opus-5-5`）。
+- `main_msg(model)`: メインの assistant 行（テキストだけ）。
 
-```python
-def asst(model, content): return json.dumps({"type": "assistant", "message": {"model": model, "content": content}})
-SKILL_CALL = [{"type": "tool_use", "name": "Skill", "input": {"skill": "model-router:use-opus-high"}}]
-TEXT = [{"type": "text", "text": "hi"}]
-
-def test_switch_ok(self):
-    run = parse_run([asst("claude-sonnet-5-5", SKILL_CALL), asst("claude-opus-5-5", TEXT)])
-    assert run.skills == ["use-opus-high"]
-    assert check(run, ["use-opus-high", "use-opus-xhigh"])[0] is True
-
-def test_skill_called_but_model_not_switched(self):
-    run = parse_run([asst("claude-sonnet-5-5", SKILL_CALL), asst("claude-sonnet-5-5", TEXT)])
-    ok, reason = check(run, ["use-opus-high"])
-    assert ok is False and "opus" in reason
-
-def test_wrong_skill(self):
-    run = parse_run([asst("claude-sonnet-5-5", SKILL_CALL), asst("claude-opus-5-5", TEXT)])
-    assert check(run, ["use-fable-xhigh"])[0] is False
-
-def test_none_expected_no_skill(self):
-    run = parse_run([asst("claude-sonnet-5-5", TEXT)])
-    assert check(run, ["none"])[0] is True
-
-def test_none_expected_but_skill_called(self):
-    run = parse_run([asst("claude-sonnet-5-5", SKILL_CALL), asst("claude-opus-5-5", TEXT)])
-    assert check(run, ["none"])[0] is False
-
-def test_ignores_non_json_and_other_types(self):
-    run = parse_run(["garbage", json.dumps({"type": "system", "subtype": "init"}), asst("claude-sonnet-5-5", TEXT)])
-    assert run.all_models == ["claude-sonnet-5-5"]
-
-def hook(event, level): return json.dumps({"hook_event_name": event, "effort": {"level": level}})
-
-def test_stop_efforts(self):
-    assert stop_efforts([hook("PostToolUse", "high"), hook("Stop", "high"), "garbage"]) == ["high"]
-
-def test_effort_mismatch_fails(self):
-    run = parse_run([asst("claude-sonnet-5-5", SKILL_CALL), asst("claude-opus-5-5", TEXT)])
-    ok, reason = check(run, ["use-opus-high"], efforts=["medium"])
-    assert ok is False and "effort" in reason
-
-def test_effort_unknown_is_not_failure(self):
-    run = parse_run([asst("claude-sonnet-5-5", SKILL_CALL), asst("claude-opus-5-5", TEXT)])
-    ok, reason = check(run, ["use-opus-high"], efforts=[])
-    assert ok is True and "effort unknown" in reason
-```
-
-規則:
-- skill を呼んだ場合、期待するモデルは skill 名の 2 番目の要素（`use-opus-high` → `opus`）。`models_after_skill` のすべてがその文字列を含めば、モデルは PASS。
-- `efforts` が空でなければ、最後の値が skill 名の 3 番目の要素（`high`）と一致すること。空か `None` なら、reason に `effort unknown` を含め、FAIL にはしない。
-- `none` の場合は、skill を 1 つも呼ばなければ PASS。
-- Skill の入力は `input["skill"]` を見て、無ければ `input["command"]` を見る（Step 6 で実際のキー名を確かめる）。
+ケース:
+1. `opus-high` を呼び、subagent が opus → PASS
+2. `opus-high` を呼び、subagent が sonnet → FAIL（「切り替わらなかった」）
+3. `fable-xhigh` を呼んだが許容は `opus-high` → FAIL（「想定外」）
+4. Agent を呼ばず、許容が `main` → PASS
+5. Agent を呼んだのに許容が `main` → FAIL
+6. 許容が `opus-high` なのに Agent を呼ばない → FAIL
+7. Agent を呼んだが subagent の行が無い → FAIL
+8. ツール名が `Task`（旧名）でも Agent と同じに扱う → PASS
+9. JSON でない行は無視する → PASS
 
 - [ ] **Step 2: テストが失敗することを確かめる**
 
 Run: `python3 -m unittest tests/test_check_run.py -v`
-Expected: FAIL（`check_run` が無い）
+Expected: FAIL
 
-- [ ] **Step 3: `tests/check_run.py` を実装する**
+- [ ] **Step 3: `tests/check_run.py` を書き換える**
 
-`parse_run`、`check`、`Run` と、上の CLI（`sys.argv[1]` の jsonl、`sys.argv[2]` の許容リスト）を実装する。
+- `parse_run(lines)` → `Run(calls: list[str], sub_models: list[str])`。`calls` は `parent_tool_use_id` が null の assistant 行にある、名前が `Agent` か `Task` の tool_use の `f"{model}-{effort}"`。`sub_models` は `parent_tool_use_id` が付いた assistant 行の `message.model`。
+- `check(run, allowed)`: Step 1 のケースどおり。切り替えの判定は、最後の呼び出しの model alias（`opus` など）が `sub_models` のすべてに含まれること。
+- 旧版の `stop_efforts` と hooks.jsonl の引数は削除する（spec 8 章の 3）。
 
 - [ ] **Step 4: テストが通ることを確かめる**
 
 Run: `python3 -m unittest tests/test_check_run.py -v`
 Expected: PASS（9 tests）
 
-- [ ] **Step 5: フィクスチャと `tests/e2e.sh` の `probe` モードを実装する**
+- [ ] **Step 5: `tests/e2e.sh` を書き換える**
 
-ケースごとの準備（関数 `run_case NAME ALLOWED PROMPT`）:
-1. `WORK=$(mktemp -d)` に `tests/fixture/` をコピーし、`git init -q && git add -A && git commit -qm init` を実行する。その後 `src/user.js` に 1 行追記し、未コミットの変更を 1 つ残す（review ケース用）。
-2. テスト専用の settings を `$OUT/$NAME.settings.json` に書き出す。Stop hook が 1 つだけで、そのコマンドは `{ cat; echo; } >> "$OUT/$NAME.hooks.jsonl"`。
-3. 次のコマンドを `$WORK` で実行する（`PLUGIN=$(cd "$(dirname "$0")/.." && pwd)` で絶対パスを渡す）。
-
-```bash
-claude -p --plugin-dir "$PLUGIN" --model "$MAIN" --max-turns 6 $EXTRA \
-  --settings "$OUT/$NAME.settings.json" \
-  --disallowedTools "Edit Write NotebookEdit Bash" \
-  --output-format stream-json --verbose "$PROMPT" > "$OUT/$NAME.jsonl" 2> "$OUT/$NAME.err"
-```
-
-4. `python3 tests/check_run.py "$OUT/$NAME.jsonl" "$ALLOWED" "$OUT/$NAME.hooks.jsonl"` で判定する。
-
-`$MAIN` の既定値は `sonnet`、`$EXTRA` の既定値は空。`$OUT` は `tests/out/`（`.gitignore` に追加する）。
-
-`probe` モードは 2 ケースを実行する。どちらもプロンプトは「model-router:use-opus-high を Skill ツールで呼んでから、1 語で挨拶して」、許容は `use-opus-high`。
-- `probe`：既定の権限モード
-- `probe-auto`：`EXTRA="--permission-mode auto"`。CLI がこの値を受け付けない場合は、`claude --help` で正しい書き方を確かめて直す
+- `run_case NAME ALLOWED PROMPT` から、Stop hook 用の settings の書き出しと `--settings` を削除する。`check_run.py` の第 3 引数も削除する。それ以外（フィクスチャのコピー、`--disallowedTools "Edit Write NotebookEdit Bash"`、stream-json）はそのまま。subagent の作業も数えるため `--max-turns` は 10 にする。
+- `probe` モードは 4 ケース:
+  - `probe-opus`: プロンプト「Agent ツールを subagent_type=general-purpose, model=opus, effort=xhigh で呼び、subagent に 1 語で挨拶させて」、許容 `opus-xhigh`
+  - `probe-fable`: 同じく model=fable, effort=high、許容 `fable-high`
+  - `probe-opus-auto` / `probe-fable-auto`: 上の 2 つに `EXTRA="--permission-mode auto"` を付ける
 
 - [ ] **Step 6: ユーザーに probe を実行してもらう（ゲート）**
 
-ユーザーにターミナルでの実行を依頼する: `zsh tests/e2e.sh probe`（ログイン済みで新しい版の CLI が必要）
-Expected: `PASS probe`、`PASS probe-auto`、`passed 2/2`
+ユーザーにターミナルでの実行を依頼する: `claude update` の後、`zsh tests/e2e.sh probe`
+Expected: `passed 4/4`
 
-あわせて、デスクトップアプリの Code タブで 1 回、手動で確かめてもらう。プラグインを読み込んだセッションをモデル Sonnet で開き、同じプロンプトを送る。応答が Opus からのものか（skill 本文の「切り替わりませんでした」の行が出ないか）を見る。
-
-- `probe` がモデル切り替えで FAIL した場合 → **ここで停止**。結果と `tests/out/probe.jsonl` の該当行をユーザーに報告し、spec の改訂（subagent 方式）を提案する。
-- `probe-auto` だけが FAIL した場合も停止して報告する。ユーザーは auto モードで使っているので、対象外にするか方式を変えるかはユーザーが決める。
-- effort が `effort unknown` だった場合や一致しなかった場合は、その結果を spec 7 章に追記してから先に進む。
-- `tests/out/probe.jsonl` で Skill の入力キー名を確かめ、`skill` 以外だった場合は check_run.py とテストを直す。
+- FAIL の場合 → **ここで停止**。`tests/out/<name>.jsonl` の該当行（Agent の入力と subagent の `model`）を報告する。
+- `tests/out/probe-opus.jsonl` で、subagent の行に `parent_tool_use_id` が付いていること、Agent の入力キー名が `model` / `effort` であることを確かめる。違えば check_run.py とテストを直す。
+- 結果を spec 7.1 の表に追記する。
 
 - [ ] **Step 7: コミット**
 
 ```bash
-git add tests/check_run.py tests/test_check_run.py tests/e2e.sh tests/fixture .gitignore
-git commit -m "test: e2e の判定器と、モデル切り替えの probe を追加"
+git add tests/check_run.py tests/test_check_run.py tests/e2e.sh docs/superpowers/specs
+git commit -m "test: 判定器を Agent ツール用に書き換え、probe を opus / fable で確かめる"
 ```
 
 ---
@@ -245,29 +151,29 @@ git commit -m "test: e2e の判定器と、モデル切り替えの probe を追
 **Files:**
 - Create: `hooks/hooks.json`
 - Create: `hooks/routing.md`
-- Modify: `tests/test_static.py`（テストを追加）
-
-**Interfaces:**
-- Consumes: Task 1 の `SKILLS`。
-- Produces: SessionStart のたびに、routing.md の全文がコンテキストに入る。
+- Modify: `tests/test_static.py`
 
 - [ ] **Step 1: 失敗するテストを追加する**
 
 ```python
+COMBOS = ["opus/medium", "opus/high", "opus/xhigh", "fable/high", "fable/xhigh"]
+
 def test_hook_has_no_matcher_and_cats_routing(self):
-    h = json.load(open("hooks/hooks.json"))["hooks"]["SessionStart"]
-    assert len(h) == 1 and "matcher" not in h[0]
+    h = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]["SessionStart"]
+    self.assertEqual(len(h), 1); self.assertNotIn("matcher", h[0])
     cmd = h[0]["hooks"][0]
-    assert cmd["type"] == "command" and "${CLAUDE_PLUGIN_ROOT}/hooks/routing.md" in cmd["command"]
+    self.assertEqual(cmd["type"], "command")
+    self.assertIn("${CLAUDE_PLUGIN_ROOT}/hooks/routing.md", cmd["command"])
 
 def test_hook_command_outputs_routing(self):
-    # cmd["command"] を CLAUDE_PLUGIN_ROOT=<repo root> の環境で subprocess（shell=True）実行し、
+    # cmd["command"] を CLAUDE_PLUGIN_ROOT=<ROOT> の環境で subprocess（shell=True）実行し、
     # stdout が hooks/routing.md の内容と一致すること
 
-def test_routing_size_and_skill_names(self):
-    text = open("hooks/routing.md", encoding="utf-8").read()
-    assert len(text) < 10000
-    for name in SKILLS: assert f"model-router:{name}" in text
+def test_routing_size_and_combos(self):
+    text = (ROOT / "hooks/routing.md").read_text(encoding="utf-8")
+    self.assertLess(len(text), 10000)
+    for c in COMBOS: self.assertIn(c, text)
+    self.assertIn("メインで実行", text)
 ```
 
 - [ ] **Step 2: テストが失敗することを確かめる**
@@ -283,12 +189,16 @@ hooks.json:
 {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "cat \"${CLAUDE_PLUGIN_ROOT}/hooks/routing.md\""}]}]}}
 ```
 
-routing.md: spec の 5.1〜5.3 章を、Claude への命令文として書き直したもの。表のセルには skill の完全な名前（`model-router:use-opus-high` など）を書く。冒頭に「毎回ユーザーのメッセージを受けたら、作業の前にこの手順で判定し、該当する skill を Skill ツールで呼ぶ」と書く。判定結果の 1 行表示の書式は `→ <モデル> / <effort>（<種類> <段階>）`。
+routing.md: spec 5.1〜5.4 章を、Claude への命令文として書き直したもの。
+- 冒頭: 「毎回ユーザーのメッセージを受けたら、作業の前にこの手順で判定する。表のセルが `メインで実行` ならそのまま作業し、それ以外なら Agent ツールを `subagent_type: general-purpose` と、セルの `model` / `effort` で呼ぶ」
+- 表のセルは `opus / high` の形で書く。
+- 判定結果の 1 行表示の書式: `→ <モデル> / <effort>（<種類> <段階>）`。メインで実行するときは `→ メインで実行（実装 1）`。
+- 5.4 の依頼文の項目は箇条書きで、そのまま写す。
 
 - [ ] **Step 4: テストが通ることを確かめる**
 
 Run: `python3 -m unittest tests/test_static.py -v`
-Expected: PASS（5 tests）
+Expected: PASS（6 tests）
 
 - [ ] **Step 5: コミット**
 
@@ -305,10 +215,7 @@ git commit -m "feat: SessionStart hook で振り分けルールを注入する"
 - Create: `tests/cases.tsv`
 - Modify: `tests/e2e.sh`（`routing` / `all` モードと特別ケースを追加）
 - Create: `README.md`
-- Delete: `.spike/`（コミットしていない使い捨てのフォルダ）
-
-**Interfaces:**
-- Consumes: Task 2 の `check_run.py` CLI と e2e.sh の共通の実行コマンド。
+- Delete: `.spike/`
 
 - [ ] **Step 1: `tests/cases.tsv` を書く**
 
@@ -316,22 +223,22 @@ git commit -m "feat: SessionStart hook で振り分けルールを注入する"
 
 | name | allowed | prompt |
 |--|--|--|
-| design-light | use-opus-medium,use-opus-high | README.md の見出し構成をどう分けるとよいか、簡単に案を出して |
-| design-heavy | use-fable-high,use-fable-xhigh | 複数リージョンにまたがるイベント駆動の決済システムで、整合性と障害復旧のトレードオフを比べて設計方針を考えて |
-| impl-light | use-sonnet-high | README.md の誤字を 1 か所直して |
-| impl-rename | use-sonnet-high | src/user.js の関数名 getUser を fetchUser にリネームして |
-| impl-heavy | use-opus-high,use-opus-xhigh | 並行リクエストでの二重課金を防ぐため、決済 API に冪等キーとロックを実装して |
-| review | use-opus-xhigh,use-fable-xhigh | このリポジトリの未コミットの変更をレビューして |
-| explicit-fable | use-fable-high,use-fable-xhigh | Fable で、README.md の構成案を考えて |
-| chat | none | こんにちは |
+| design-light | opus-medium,opus-high | README.md の見出し構成をどう分けるとよいか、簡単に案を出して |
+| design-heavy | fable-high,fable-xhigh | 複数リージョンにまたがるイベント駆動の決済システムで、整合性と障害復旧のトレードオフを比べて設計方針を考えて |
+| impl-light | main | README.md の誤字を 1 か所直して |
+| impl-rename | main | src/user.js の関数名 getUser を fetchUser にリネームして |
+| impl-heavy | opus-high,opus-xhigh | 並行リクエストでの二重課金を防ぐため、決済 API に冪等キーとロックを実装して |
+| review | opus-xhigh,fable-xhigh | このリポジトリの未コミットの変更をレビューして |
+| explicit-fable | fable-high,fable-xhigh | Fable で、README.md の構成案を考えて |
+| chat | main | こんにちは |
 
 ファイルを編集するツールは `--disallowedTools` で禁止しているので、実装ケースでも実際のファイルは変わらない。判定と切り替えさえ起きれば十分。
 
 - [ ] **Step 2: e2e.sh に `routing` モードを追加する**
 
-cases.tsv の各行を、共通の実行コマンドで実行してから `check_run.py` で判定する。特別ケースを 2 つ追加する。
-- `main-opus`: `MAIN=opus` で `impl-heavy` のプロンプトを実行する。許容は `use-opus-high,use-opus-xhigh`。加えて、出力のテキストに `/model sonnet` が含まれることを grep で確かめる。
-- `continue`: 同じ作業ディレクトリで、まず `design-heavy` のプロンプトを実行し、続けて `claude -p --continue ...`（他のオプションは共通と同じ）で「続けて」を実行する。2 回目の結果を許容 `use-fable-high,use-fable-xhigh` で判定する。
+cases.tsv の各行を `run_case` で実行する。特別ケースを 2 つ追加する。
+- `main-opus`: `MAIN=opus` で `impl-heavy` のプロンプトを実行する。許容は `opus-high,opus-xhigh`。加えて、出力のテキストに `/model sonnet` が含まれることを grep で確かめる。
+- `continue`: 同じ作業ディレクトリで、まず `design-heavy` のプロンプトを実行し、続けて `claude -p --continue ...`（他のオプションは共通と同じ）で「続けて」を実行する。2 回目の結果を許容 `fable-high,fable-xhigh` で判定する。2 回目で SendMessage が使われた場合は、Agent の呼び出しが無くても PASS とする（check_run.py に `SendMessage` の扱いを足し、テストも 1 つ足す）。
 
 `all` は `probe` と `routing` を順に実行する。
 
@@ -340,22 +247,22 @@ cases.tsv の各行を、共通の実行コマンドで実行してから `check
 ユーザーにターミナルでの実行を依頼する: `zsh tests/e2e.sh routing`
 Expected: `passed 10/10`
 
-FAIL があれば、`tests/out/<name>.jsonl` の判定結果の行を見て routing.md の判定基準を直し、もう一度実行してもらう。3 回直しても通らないケースは、ユーザーに報告して許容リストを変えるか判断を仰ぐ。
+FAIL があれば、`tests/out/<name>.jsonl` の判定結果の行を見て routing.md の判定基準を直し、もう一度実行してもらう。3 回直しても通らないケースは、ユーザーに報告して許容リストを変えるか判断を仰ぐ。あわせて、Agent の `prompt` を 2〜3 件読み、spec 5.4 の項目が入っているかを確かめる。
 
 - [ ] **Step 4: README.md を書く**
 
 含める内容（それぞれ数行）:
 - 何をするプラグインか（spec 1 章の要約）
-- 使い方: `claude --plugin-dir <このリポジトリ>` で起動し、メインのモデルを `/model sonnet` にする
+- 使い方: マーケットプレイス `kjman678-plugins` から入れるか、`claude --plugin-dir <このリポジトリ>` で起動する。メインのモデルは `/model sonnet`、effort は `/effort high` にする。Claude Code v2.1.292 以上が必要
 - 振り分け表（spec 5.1 章の表）。変えたいときは `hooks/routing.md` を編集する
-- 制約: 切り替わるのはそのターンだけ。組織の `availableModels` 制限、プラン、auto モードの対応状況によっては、指定のモデルが使えない
-- 費用について: 振り分けが起きたターンでは、Sonnet の判定が 1 回加わる。モデルが変わるとプロンプトキャッシュが効かず、会話全体を読み直す（spec 7 章）
+- 制約: 重い作業は subagent が行うため、途中経過はメインの画面に流れず、結果を Sonnet が伝える。組織の `availableModels` 制限やプランによっては、指定のモデルが別のモデルに置き換えられる
+- 費用について: 振り分けが起きたターンでは、Sonnet の判定・依頼文・結果の伝達が加わる（spec 7.2）
 - テスト: `python3 -m unittest discover tests` と `zsh tests/e2e.sh all`（API を呼ぶ。ログインが必要）
 
 - [ ] **Step 5: 全体を確かめる**
 
 Run: `python3 -m unittest discover tests -v`
-Expected: PASS（14 tests）
+Expected: PASS（16 tests）
 
 Run: `claude plugin validate .`
 Expected: エラーなし
@@ -363,7 +270,7 @@ Expected: エラーなし
 - [ ] **Step 6: `.spike/` を削除してコミットする**
 
 ```bash
-rm -rf .spike
-git add tests/cases.tsv tests/e2e.sh README.md
+git rm -r -q .spike
+git add tests/cases.tsv tests/e2e.sh tests/check_run.py tests/test_check_run.py README.md
 git commit -m "test: 振り分けの e2e ケースと README を追加"
 ```
