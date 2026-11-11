@@ -1,8 +1,11 @@
 import json
+import os
+import subprocess
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+COMBOS = ["opus / medium", "opus / high", "opus / xhigh", "fable / high", "fable / xhigh"]
 
 
 class StaticTest(unittest.TestCase):
@@ -20,6 +23,29 @@ class StaticTest(unittest.TestCase):
 
     def test_no_skills_dir(self):
         self.assertFalse((ROOT / "skills").exists())
+
+    def _hook_cmd(self):
+        h = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]["SessionStart"]
+        self.assertEqual(len(h), 1)
+        self.assertNotIn("matcher", h[0])  # startup / resume / clear / compact のすべてで注入する
+        cmd = h[0]["hooks"][0]
+        self.assertEqual(cmd["type"], "command")
+        return cmd["command"]
+
+    def test_hook_has_no_matcher_and_cats_routing(self):
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/hooks/routing.md", self._hook_cmd())
+
+    def test_hook_command_outputs_routing(self):
+        out = subprocess.run(self._hook_cmd(), shell=True, capture_output=True, text=True, check=True,
+                             env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(ROOT)}).stdout
+        self.assertEqual(out, (ROOT / "hooks/routing.md").read_text(encoding="utf-8"))
+
+    def test_routing_size_and_combos(self):
+        text = (ROOT / "hooks/routing.md").read_text(encoding="utf-8")
+        self.assertLess(len(text), 10000)  # additionalContext の上限
+        for c in COMBOS:
+            self.assertIn(c, text)
+        self.assertIn("メインで実行", text)
 
 
 if __name__ == "__main__":
