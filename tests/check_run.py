@@ -1,17 +1,19 @@
-"""claude -p の stream-json 出力から、skill 呼び出しとモデル切り替えを判定する。
+"""claude -p の stream-json 出力から、Agent ツールの呼び出しと subagent のモデルを判定する。
 
-usage: check_run.py <run.jsonl> <allowed,skills|none> [<hooks.jsonl>]
+usage: check_run.py <run.jsonl> <allowed,combos|main>
+  allowed: opus-high,opus-xhigh のようなカンマ区切りの組み合わせ、または main（subagent を使わない）
 """
 import json
 import sys
 from dataclasses import dataclass, field
 
+AGENT_TOOLS = ("Agent", "Task")
+
 
 @dataclass
 class Run:
-    skills: list = field(default_factory=list)
-    models_after_skill: list = field(default_factory=list)
-    all_models: list = field(default_factory=list)
+    calls: list = field(default_factory=list)       # メインが呼んだ Agent の "<model>-<effort>"
+    sub_models: list = field(default_factory=list)  # subagent の assistant メッセージの model
 
 
 def _json_lines(lines):
@@ -30,61 +32,40 @@ def parse_run(lines):
         if obj.get("type") != "assistant":
             continue
         msg = obj.get("message", {})
-        model = msg.get("model")
-        if model:
-            run.all_models.append(model)
-            if run.skills:  # skill 呼び出しを含むメッセージ自身は含めない（先に追加される）
-                run.models_after_skill.append(model)
+        if obj.get("parent_tool_use_id"):
+            if msg.get("model"):
+                run.sub_models.append(msg["model"])
+            continue
         for block in msg.get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Skill":
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in AGENT_TOOLS:
                 inp = block.get("input", {})
-                name = inp.get("skill") or inp.get("command") or ""
-                run.skills.append(name.split(":", 1)[-1])
+                run.calls.append(f"{inp.get('model', '?')}-{inp.get('effort', '?')}")
     return run
 
 
-def stop_efforts(hook_lines):
-    return [
-        obj.get("effort", {}).get("level")
-        for obj in _json_lines(hook_lines)
-        if obj.get("hook_event_name") == "Stop" and obj.get("effort", {}).get("level")
-    ]
-
-
-def check(run, allowed, efforts=None):
-    if allowed == ["none"]:
-        if run.skills:
-            return False, f"skill を呼ぶべきでないのに呼んだ: {run.skills}"
-        return True, "skill なし"
-    if not run.skills:
-        return False, f"skill が呼ばれなかった（期待: {allowed}）"
-    bad = [s for s in run.skills if s not in allowed]
+def check(run, allowed):
+    if allowed == ["main"]:
+        if run.calls:
+            return False, f"subagent を使うべきでないのに呼んだ: {run.calls}"
+        return True, "メインで実行"
+    if not run.calls:
+        return False, f"Agent が呼ばれなかった（期待: {allowed}）"
+    bad = [c for c in run.calls if c not in allowed]
     if bad:
-        return False, f"想定外の skill: {bad}（許容: {allowed}）"
-    _, model, effort = run.skills[-1].split("-")
-    if not run.models_after_skill:
-        return False, "skill の後に assistant メッセージがない"
-    wrong = [m for m in run.models_after_skill if model not in m]
+        return False, f"想定外の Agent 呼び出し: {bad}（許容: {allowed}）"
+    model = run.calls[-1].split("-")[0]
+    if not run.sub_models:
+        return False, "subagent のメッセージがない"
+    wrong = [m for m in run.sub_models if model not in m]
     if wrong:
         return False, f"{model} に切り替わらなかった: {wrong}"
-    if efforts:
-        if efforts[-1] != effort:
-            return False, f"effort が違う: {efforts[-1]}（期待 {effort}）"
-        return True, f"{run.skills[-1]}: model {model}, effort {effort}"
-    return True, f"{run.skills[-1]}: model {model}, effort unknown"
+    return True, f"{run.calls[-1]}: subagent は {model}"
 
 
 def main(argv):
     with open(argv[1], encoding="utf-8") as f:
         run = parse_run(f.read().splitlines())
-    efforts = None
-    if len(argv) > 3:
-        try:
-            with open(argv[3], encoding="utf-8") as f:
-                efforts = stop_efforts(f.read().splitlines())
-        except FileNotFoundError:
-            pass
-    ok, reason = check(run, argv[2].split(","), efforts)
+    ok, reason = check(run, argv[2].split(","))
     print(("PASS " if ok else "FAIL ") + reason)
     return 0 if ok else 1
 
