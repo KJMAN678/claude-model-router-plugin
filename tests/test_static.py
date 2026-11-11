@@ -47,6 +47,14 @@ class StaticTest(unittest.TestCase):
             self.assertIn(c, text)
         self.assertIn("メインで実行", text)
 
+    def test_cases_tsv(self):
+        rows = [l.split("\t") for l in (ROOT / "tests/cases.tsv").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(rows[0], ["name", "allowed", "prompt"])
+        valid = {c.replace(" / ", "-") for c in COMBOS} | {"main"}
+        for row in rows[1:]:
+            self.assertEqual(len(row), 3, row)
+            self.assertTrue(set(row[1].split(",")) <= valid, row)
+
 
 if __name__ == "__main__":
     unittest.main()

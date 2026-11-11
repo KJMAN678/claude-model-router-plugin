@@ -1,1 +1,0 @@
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"prompt","model":"haiku","prompt":"Classify this user prompt as SIMPLE or COMPLEX. Prompt: $ARGUMENTS. Respond with ok=true and put the label in reason."}]}]}}

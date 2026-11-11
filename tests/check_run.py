@@ -14,6 +14,7 @@ AGENT_TOOLS = ("Agent", "Task")
 class Run:
     calls: list = field(default_factory=list)       # メインが呼んだ Agent の "<model>-<effort>"
     sub_models: list = field(default_factory=list)  # subagent の assistant メッセージの model
+    sends: int = 0                                  # SendMessage の呼び出し回数（既存の subagent への続き）
 
 
 def _json_lines(lines):
@@ -37,17 +38,23 @@ def parse_run(lines):
                 run.sub_models.append(msg["model"])
             continue
         for block in msg.get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in AGENT_TOOLS:
+            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            if block.get("name") in AGENT_TOOLS:
                 inp = block.get("input", {})
                 run.calls.append(f"{inp.get('model', '?')}-{inp.get('effort', '?')}")
+            elif block.get("name") == "SendMessage":
+                run.sends += 1
     return run
 
 
 def check(run, allowed):
     if allowed == ["main"]:
-        if run.calls:
-            return False, f"subagent を使うべきでないのに呼んだ: {run.calls}"
+        if run.calls or run.sends:
+            return False, f"subagent を使うべきでないのに呼んだ: {run.calls or 'SendMessage'}"
         return True, "メインで実行"
+    if not run.calls and run.sends:
+        return True, "SendMessage で既存の subagent に続けた"
     if not run.calls:
         return False, f"Agent が呼ばれなかった（期待: {allowed}）"
     bad = [c for c in run.calls if c not in allowed]
