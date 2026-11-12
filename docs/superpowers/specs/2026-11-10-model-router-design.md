@@ -126,10 +126,19 @@ subagent はこの会話を読めない。依頼文だけで作業できるよ�
 | explicit-fable | fable / high（設計・調査 3） | fable / high | fable-5-2 / high | PASS |
 | chat | 表示なし | なし | — | PASS |
 | continue（design-heavy の後に「続けて」） | — | 新しい Agent は呼ばず、SendMessage で同じ subagent に続けた | fable-5-2 / xhigh | PASS |
-| impl-heavy | opus / xhigh（実装 3） | Explore（モデル指定なし） | sonnet-5-5 / high | 未確認 |
-| main-opus（メインが Opus） | opus / xhigh（実装 3）、`/model sonnet` を案内 | なし | — | 未確認 |
+| impl-heavy | opus / xhigh（実装 3） | Explore（モデル指定なし） | sonnet-5-5 / high | plan モードでは未確認（下の再確認で PASS） |
+| main-opus（メインが Opus） | opus / xhigh（実装 3）、`/model sonnet` を案内 | なし | — | plan モードでは未確認（下の再確認で PASS） |
 
-- impl-heavy と main-opus は、plan モードのため「実装は subagent に任せられない」とメインが判断し、先に調査をした。判定は正しいが、委譲は plan モードでは確かめられていない。default / auto モードでの再確認が必要。
+- impl-heavy と main-opus は、plan モードのため「実装は subagent に任せられない」とメインが判断し、先に調査をした。判定は正しいが、委譲は plan モードでは確かめられていない。default モードで再実行した結果は次の表。
+
+再実行（default モード、2026-11-12）:
+
+| ケース | 判定の表示 | Agent に渡した値 | subagent の実送信 | 結果 |
+|--|--|--|--|--|
+| impl-heavy（メインは Sonnet） | opus / xhigh（実装 3） | opus / xhigh | opus-5-5 / xhigh | PASS |
+| main-opus（メインは Opus） | opus / xhigh（実装 3）、`/model sonnet` を案内 | opus / xhigh | opus-5-5 / xhigh | PASS |
+
+- メインが Opus でも、ルールどおり同じモデルの subagent に任せた。メインと subagent が同じモデルになるので、この場合は費用が減らず、依頼文の作成分だけ増える。気になる場合は、routing.md に「メインがすでに表のモデルなら、メインで実行」を足す。
 - 「続けて」は、別セッションから SendMessage で送ったため、ユーザーが直接入力した場合とは経路が違う。
 - 依頼文は、原文、制約、返してほしいもの、質問を返す注記がそろっていた（design-heavy で確認）。
 
@@ -138,7 +147,6 @@ subagent はこの会話を読めない。依頼文だけで作業できるよ�
 
 ### 7.2 未検証のリスク
 
-- **実装の委譲（impl-heavy）と、メインが Opus のときの動き。** plan モードでは確かめられなかった（7.1.1）。default / auto モードで確かめる。
 - **auto モードでの Agent ツールの切り替え。** デスクトップアプリで確認したのは default モードだけ。e2e の probe（8 章）で確かめる。
 - **CLI（`claude -p`）での動作。** 確認したのはデスクトップアプリだけ。e2e の probe で確かめる。
 - **判定と依頼文の質。** Sonnet が表どおりに判定し、5.4 を満たす依頼文を書けるか。e2e の routing（8 章）で判定を確かめる。依頼文の質は運用しながら見る。
