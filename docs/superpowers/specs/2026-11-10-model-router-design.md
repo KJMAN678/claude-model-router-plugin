@@ -112,11 +112,33 @@ subagent はこの会話を読めない。依頼文だけで作業できるよ�
 | Agent ツールを `model: opus`、`effort: xhigh` で呼ぶ | default | 切り替わる。opus-5-5 に送られ、effort は xhigh だった |
 | Agent ツールを `model: fable`、`effort: high` で呼ぶ | default | 切り替わる。fable-5-2 に送られ、effort は high だった |
 
+### 7.1.1 プラグイン 0.1.1 を使った振り分けの実機確認（2026-11-12、デスクトップアプリ）
+
+デスクトップに入れた model-router 0.1.1（e995abe）で、メインを Sonnet 5.5、権限モードを plan にした新しいセッションに、`tests/cases.tsv` のプロンプトを送った。判定は assistant の表示、渡した引数と実送信は記録の `Agent` の入力と subagent の `api-request` で見た。
+
+| ケース | 判定の表示 | Agent に渡した値 | subagent の実送信 | 結果 |
+|--|--|--|--|--|
+| design-heavy | fable / xhigh（設計・調査 4） | fable / xhigh | fable-5-2 / xhigh | PASS |
+| design-light | opus / medium（設計・調査 1） | opus / medium | opus-5-5 / medium | PASS |
+| impl-light | メインで実行（実装 1） | なし | — | PASS |
+| impl-rename | メインで実行（実装 1） | なし | — | PASS |
+| review | opus / xhigh（レビュー 1） | opus / xhigh | opus-5-5 / xhigh | PASS |
+| explicit-fable | fable / high（設計・調査 3） | fable / high | fable-5-2 / high | PASS |
+| chat | 表示なし | なし | — | PASS |
+| continue（design-heavy の後に「続けて」） | — | 新しい Agent は呼ばず、SendMessage で同じ subagent に続けた | fable-5-2 / xhigh | PASS |
+| impl-heavy | opus / xhigh（実装 3） | Explore（モデル指定なし） | sonnet-5-5 / high | 未確認 |
+| main-opus（メインが Opus） | opus / xhigh（実装 3）、`/model sonnet` を案内 | なし | — | 未確認 |
+
+- impl-heavy と main-opus は、plan モードのため「実装は subagent に任せられない」とメインが判断し、先に調査をした。判定は正しいが、委譲は plan モードでは確かめられていない。default / auto モードでの再確認が必要。
+- 「続けて」は、別セッションから SendMessage で送ったため、ユーザーが直接入力した場合とは経路が違う。
+- 依頼文は、原文、制約、返してほしいもの、質問を返す注記がそろっていた（design-heavy で確認）。
+
 - skill を呼ぶと、システムプロンプトの名乗り（「Sonnet 5.5 で動いている」）とコミット署名だけは書き換わった。実際の送り先は変わらなかった。そのため、モデルの自己申告では切り替わったかどうかを判断できない。
 - ユーザーが `/` で skill を呼んだ場合は、CLI 2.1.119 で初期化時のモデルが haiku に変わった（改訂前に確認）。自動の振り分けには使えないので、この設計では使わない。
 
 ### 7.2 未検証のリスク
 
+- **実装の委譲（impl-heavy）と、メインが Opus のときの動き。** plan モードでは確かめられなかった（7.1.1）。default / auto モードで確かめる。
 - **auto モードでの Agent ツールの切り替え。** デスクトップアプリで確認したのは default モードだけ。e2e の probe（8 章）で確かめる。
 - **CLI（`claude -p`）での動作。** 確認したのはデスクトップアプリだけ。e2e の probe で確かめる。
 - **判定と依頼文の質。** Sonnet が表どおりに判定し、5.4 を満たす依頼文を書けるか。e2e の routing（8 章）で判定を確かめる。依頼文の質は運用しながら見る。
