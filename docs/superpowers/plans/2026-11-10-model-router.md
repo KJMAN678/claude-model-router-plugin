@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-11-12 改訂: この計画は、subagent 方式の実装記録として残す。** 方式は mod に置き換わり、このあとの計画は立てていない。現行の設計は [spec](../specs/2026-11-10-model-router-design.md)。この計画の Task 1〜4（skill 削除、判定器、hook と routing.md、e2e と README）は、subagent 方式のものとして完了し、`hooks/routing.md`、`tests/e2e.sh`、`tests/check_run.py`、`tests/cases.tsv` は mod 方式への置き換えで削除した（コミット `4ebd3cd` までが、その実装）。チェックボックスは更新していない。
+
 **Goal:** メインの Sonnet がタスクの種類と難易度を判定し、Agent ツールを表の `model` / `effort` で呼んで作業を subagent に任せる Claude Code プラグインを作る。
 
 **Architecture:** SessionStart hook が `hooks/routing.md`（振り分けルール）をコンテキストに注入する。Sonnet はそのルールに従い、「メインで実行」か「Agent ツールを `model` と `effort` を付けて呼ぶ」かを選ぶ。モデル×effort ごとのファイルは置かない。

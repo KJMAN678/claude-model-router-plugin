@@ -1,9 +1,0 @@
-name	allowed	prompt
-design-light	opus-medium,opus-high	README.md の見出し構成をどう分けるとよいか、簡単に案を出して
-design-heavy	fable-high,fable-xhigh	複数リージョンにまたがるイベント駆動の決済システムで、整合性と障害復旧のトレードオフを比べて設計方針を考えて
-impl-light	main	README.md の誤字を 1 か所直して
-impl-rename	main	src/user.js の関数名 getUser を fetchUser にリネームして
-impl-heavy	opus-high,opus-xhigh	並行リクエストでの二重課金を防ぐため、決済 API に冪等キーとロックを実装して
-review	opus-xhigh,fable-xhigh	このリポジトリの未コミットの変更をレビューして
-explicit-fable	fable-high,fable-xhigh	Fable で、README.md の構成案を考えて
-chat	main	こんにちは
