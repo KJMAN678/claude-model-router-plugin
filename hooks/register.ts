@@ -24,12 +24,30 @@ const EXPLICIT = /(fable|opus|sonnet)\s*(で|を使|に切り替)/i
 const CONTINUATION = /^\s*(続けて|続き|つづけて|それで|そこ|それ|さっき|continue|go on)/i
 const MAX_CONTINUATION_LENGTH = 30
 
+const NAMES: Record<string, string> = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet' }
+
+// 切り替えても、セッション開始時の「You are powered by …」はセッションのモデルのまま。
+// そのターンのプロンプトに添え書きして、名乗りを実際のモデルに合わせる（前の会話は書き換えないので、キャッシュは崩れない）。
+function identityNote(pick: Route | null, hasNoted: boolean): string | undefined {
+  if (pick) {
+    const name = NAMES[pick.model] ?? pick.model
+    return `model-router: このターンは ${name}（effort ${pick.effort}）が応答している。` +
+      `システムが示す「You are powered by …」のモデル名はセッションに設定されたもので、このターンには当てはまらない。` +
+      `自分のモデルを問われたら ${name} と答える。`
+  }
+  // 前のターンで添え書きしていたら、切り替えないターンでもそれを打ち消す。
+  if (hasNoted) return 'model-router: このターンは切り替えなし。セッションに設定されたモデルが応答している。'
+  return undefined
+}
+
 export const register: Register = on => {
   // ponytail: モジュール変数なので、mod の再読み込みで消える。続きの判定が 1 回外れるだけ。
   let pick: Route | null = null
+  let hasNoted = false
 
   on('prompt.submit', async ($, e, next) => {
     // スラッシュコマンドと、人が打っていないプロンプトでは判定を変えない。
+    // ponytail: このときは添え書きもしないので、直前の判定で切り替えたターンでも名乗りが合わない。
     if (e.command || e.isMeta) return next(e)
 
     const explicit = EXPLICIT.exec(e.text)
@@ -46,7 +64,10 @@ export const register: Register = on => {
       }
     }
     $.ui.status(pick ? `→ ${pick.model} / ${pick.effort}` : undefined)
-    return next(e)
+    const note = identityNote(pick, hasNoted)
+    if (!note) return next(e)
+    hasNoted = true
+    return next({ ...e, context: [...(e.context ?? []), note] })
   })
 
   // リクエストを送る直前に、毎回呼ばれる。effort の書き換えは次のステップに引き継がれないので、毎回指定する。

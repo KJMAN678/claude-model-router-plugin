@@ -1,1 +1,1 @@
-{"name": "model-router", "version": "0.2.0", "description": "タスクの種類と難易度に応じて、メインのモデルと effort をターンごとに切り替える（mod）"}
+{"name": "model-router", "version": "0.2.1", "description": "タスクの種類と難易度に応じて、メインのモデルと effort をターンごとに切り替える（mod）"}
