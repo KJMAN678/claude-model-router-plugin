@@ -7,8 +7,8 @@
     {
       "name": "model-router",
       "source": "./",
-      "description": "タスクの種類と難易度に応じて、モデルと effort を指定した subagent に作業を任せる",
-      "version": "0.1.1"
+      "description": "タスクの種類と難易度に応じて、メインのモデルと effort をターンごとに切り替える（mod）",
+      "version": "0.2.0"
     }
   ]
 }
