@@ -63,7 +63,8 @@ export const register: Register = on => {
         pick = null // 分類に失敗したら、切り替えずにセッションのモデルで続ける。
       }
     }
-    $.ui.status(pick ? `→ ${pick.model} / ${pick.effort}` : undefined)
+    // 画面のモデル表示はセッションの設定のままなので、このターンの実際の送り先だと分かる文言にする。
+    $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick.effort}（画面のモデル表示とは別）` : undefined)
     const note = identityNote(pick, hasNoted)
     if (!note) return next(e)
     hasNoted = true
