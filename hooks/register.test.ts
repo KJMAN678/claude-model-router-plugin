@@ -130,7 +130,8 @@ test('a short continuation is classified with the recent conversation', async ($
 test('only the last four non-empty messages are sent, each cut to 500 chars', async ($, on) => {
   const seen = setup(on, () => 'chat-or-question', () => [
     { role: 'user', text: 'first' },
-    { role: 'assistant', text: '' },
+    { role: 'assistant', text: 'zero' },
+    { role: 'user', text: '' },
     { role: 'user', text: 'second' },
     { role: 'assistant', text: 'a'.repeat(600) },
     { role: 'user', text: 'third' },
@@ -138,6 +139,7 @@ test('only the last four non-empty messages are sent, each cut to 500 chars', as
   ])
   await $.prompt.submit({ text: 'こんにちは' })
   expect(seen.request.prompt).not.toContain('first')
+  expect(seen.request.prompt).not.toContain('zero')
   expect(seen.request.prompt).toContain('second')
   expect(seen.request.prompt).toContain('third')
   expect(seen.request.prompt).toContain('fourth')
@@ -147,7 +149,7 @@ test('only the last four non-empty messages are sent, each cut to 500 chars', as
 
 test("the router's own note is not sent to the classifier", async ($, on) => {
   const seen = setup(on, () => 'review-deep', () => [
-    { role: 'user', text: 'model-router: このターンは Opus（effort high）が応答している。\nレビューして' },
+    { role: 'user', text: 'レビューして' + 'model-router: このターンは Opus（effort high）が応答している。' },
   ])
   await $.prompt.submit({ text: 'お願いします' })
   expect(seen.request.prompt).not.toContain('model-router:')
@@ -191,4 +193,19 @@ test('a failed messages read still classifies the request', async ($, on) => {
   await step($)
   expect(seen.classified).toBe(1)
   expect(seen.model).toBe('fable')
+})
+
+test('consecutive messages from one side count as one, so the window keeps two exchanges', async ($, on) => {
+  const seen = setup(on, () => 'design-hardest', () => [
+    { role: 'user', text: '決済システムを設計して' },
+    { role: 'assistant', text: '見ます' },
+    { role: 'assistant', text: '読みました' },
+    { role: 'assistant', text: '案を 3 つ出しました' },
+    { role: 'user', text: '2 案目で' },
+    { role: 'assistant', text: '詰めました' },
+  ])
+  await $.prompt.submit({ text: '続けて' })
+  expect(seen.request.prompt).toContain('決済システムを設計して')
+  expect(seen.request.prompt).toContain('見ます')
+  expect(seen.request.prompt).toContain('案を 3 つ出しました')
 })

@@ -147,7 +147,7 @@ on('prompt.submit', async ($, e, next) => {
 - ②で分類を呼ばないのは、モデルの名前が書いてあれば、それで確実に決まるためです。
 - ③では、`$.model.complete` で Haiku（effort low、最大 20 トークン、10 秒まで）を 1 回呼びます。渡すのは次の 2 つです。
   - システムプロンプト: `CRITERIA`（各ラベルの判断基準と、答え方の指示）
-  - 本文: 直前の会話（本文のある最後の 4 件、つまり 2 往復。1 発言 500 文字まで。ツールの出力と、このプラグインの添え書きは除く）を `<conversation>`、今回のプロンプトを `<request>` で囲んだもの
+  - 本文: 直前の会話（同じ側の発言が続いたら 1 件にまとめたうえで、本文のある最後の 4 件、つまり 2 往復。1 発言 500 文字まで。ツールの出力と、このプラグインの添え書きは除く）を `<conversation>`、今回のプロンプトを `<request>` で囲んだもの
 - 「続けて」のような短い続きも、会話を見た Haiku が、直前の作業と同じラベルを選びます。以前は先頭の語を正規表現で見ていましたが、「その件だけど…」のような言い方を取りこぼすため、0.3.0 でやめました。
 - 構造化出力は mod の API にないので、ラベルを 1 語で答えさせ、返事に含まれるラベルを拾います。
 - ③で、返事にラベルがなかったときと、API が失敗したときは、`pick = null` にして、切り替えずにセッションのモデルで続けます。分類の失敗で、作業が止まることはありません。
@@ -200,10 +200,10 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 | 種類 | 実行 | 内容 |
 |--|--|--|
 | 静的な確認 | `python3 -m unittest discover tests` | plugin.json と marketplace.json の整合、`hooks.json` が mod だけを読むこと、`register.ts` が 2 つのフックを持つこと |
-| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 16 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
+| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 17 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
 | 検証 | `claude plugin validate .` | `prompt.submit` と `turn.step` を hook し、`$.model.complete`、`$.session.messages`、`$.ui.status` を呼ぶことの確認 |
 
-`claude plugin test` の 16 ケース（`hooks/register.test.ts`）:
+`claude plugin test` の 17 ケース（`hooks/register.test.ts`）:
 
 1. レビューのプロンプトで、Fable / xhigh に切り替わる
 2. 雑談では、切り替えない
@@ -221,6 +221,7 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 14. ラベルでない返事では、切り替えない
 15. 応答のない呼び出しでは、切り替えない
 16. 会話が読めなくても、今回のプロンプトだけで分類する
+17. ツールを使ったターンのように同じ側の発言が続いても、1 件にまとめるので、2 往復ぶんが渡る
 
 **テストでできないこと:** Haiku の返事は差し替えているので、Haiku が基準どおりのラベルを選ぶかは、テストでは確かめられません。それは、実機で見る必要があります。
 

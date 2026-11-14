@@ -44,10 +44,17 @@ const MAX_MESSAGE_LENGTH = 500
 type Message = { role: 'user' | 'assistant'; text: string }
 
 // 直前の会話（本文のある最後の 4 件、各 500 文字まで）と今回の依頼を、Haiku に渡す形にする。
+// ツールを使ったターンは同じ側の発言が続くので、続いた発言は 1 件にまとめる。そうしないと 4 件が 2 往復にならない。
 function conversation(messages: readonly Message[], request: string): string {
-  const rows = messages
-    .map(m => ({ role: m.role, text: m.text.split('\n').filter(l => !l.startsWith('model-router:')).join('\n').trim() }))
-    .filter(m => m.text !== '')
+  const rows: Message[] = []
+  for (const m of messages) {
+    // 添え書きは前の文に続けて記録されることもあるので、行頭に限らず取り除く。
+    const text = m.text.replace(/model-router:[^\n]*/g, '').trim()
+    if (text === '') continue
+    const prev = rows.at(-1)
+    if (prev?.role === m.role) prev.text += '\n' + text
+    else rows.push({ role: m.role, text })
+  }
   const last = rows.at(-1)
   if (last?.role === 'user' && last.text === request.trim()) rows.pop()
   const lines = rows.slice(-RECENT_MESSAGES).map(m => `${m.role}: ${m.text.slice(0, MAX_MESSAGE_LENGTH)}`)
