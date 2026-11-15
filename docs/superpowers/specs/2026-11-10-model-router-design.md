@@ -42,12 +42,14 @@ model-router/                      # リポジトリのルート = プラグイ�
 
 | ラベル | モデル / effort |
 |--|--|
-| design-simple / moderate / complex / hardest | opus / medium、opus / high、fable / high、fable / xhigh |
+| design-simple / moderate / complex / hardest | opus / medium、opus / high、opus / high、opus / xhigh |
 | implement-simple / moderate / complex | sonnet / high、opus / high、opus / xhigh |
-| review-standard / deep | opus / xhigh、fable / xhigh |
+| review-standard / deep | opus / xhigh、opus / xhigh |
 | chat-or-question | 切り替えない（セッションのモデルのまま） |
 
-intent.md との対応: 設計・調査のシンプル = Opus medium〜high、複雑 = Fable high〜xhigh。実装のシンプル = Sonnet high、複雑 = Opus high〜xhigh。レビュー = Opus〜Fable の xhigh。
+intent.md との対応: 設計・調査のシンプル = Opus medium〜high、複雑 = Opus high〜xhigh。実装のシンプル = Sonnet high、複雑 = Opus high〜xhigh。レビュー = Opus の xhigh。
+
+**Fable は、プロンプトに「Fable で」と書いたとき（4.2 の 2）だけ使う**（2026-11-15 に変更）。intent.md で Fable としていた複雑な設計と深いレビューは、effort を変えずに Opus に替えた。
 
 各ラベルの判断基準は `register.ts` の `CRITERIA` に文章で書き、Haiku にシステムプロンプトとして渡す。0.2.x までは `$.model.classify` を使っており、基準の文章を渡せなかった。
 

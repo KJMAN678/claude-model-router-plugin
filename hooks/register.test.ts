@@ -82,13 +82,25 @@ async function step($: any, agentId?: string) {
 
 // ---- 1. 振り分けの基本（ラベル → モデルと effort） ----
 
-// 重いレビューのラベル（review-deep）なら、fable / xhigh に切り替わる。
-test('a review prompt switches the main model to fable xhigh', async ($, on) => {
+// 重いレビューのラベル（review-deep）なら、opus / xhigh に切り替わる。
+test('a review prompt switches the main model to opus xhigh', async ($, on) => {
   const seen = setup(on, () => 'review-deep')
   await $.prompt.submit({ text: 'この変更をレビューして' })
   await step($)
-  expect(seen.model).toBe('fable')
+  expect(seen.model).toBe('opus')
   expect(seen.effort).toBe('xhigh')
+})
+
+// Fable は、プロンプトに「Fable で」と書いたときだけ使う。分類の結果（どのラベル）では、fable にならない。
+test('no classification label routes to fable', async ($, on) => {
+  let label = 'chat-or-question'
+  const seen = setup(on, () => label)
+  for (const l of LABELS) {
+    label = l
+    await $.prompt.submit({ text: '何かして' })
+    await step($)
+    expect(seen.model).not.toBe('fable')
+  }
 })
 
 // 雑談のラベル（chat-or-question）なら切り替えず、セッションの sonnet / high のまま。
@@ -123,12 +135,12 @@ test('a subagent step is left alone', async ($, on) => {
 // 切り替えても、システムプロンプトの「You are powered by …」はセッションのモデルのまま。
 // そのため、切り替えたターンには添え書きをつけて、モデルが自分の名前を取り違えないようにしている。
 
-// 切り替えたターンには、実際に応答するモデルの名前（Fable）を入れた添え書きが 1 つつく。
+// 切り替えたターンには、実際に応答するモデルの名前（Opus）を入れた添え書きが 1 つつく。
 test('a switched turn tells the model which model answers', async ($, on) => {
   const seen = setup(on, () => 'review-deep')
   await $.prompt.submit({ text: 'レビューして' })
   expect(seen.context.length).toBe(1)
-  expect(seen.context[0]).toContain('Fable')
+  expect(seen.context[0]).toContain('Opus')
 })
 
 // 添え書きの出し入れを、3 ターンの流れで確かめる。
@@ -163,7 +175,7 @@ test('the classifier is called with haiku, low effort and the criteria', async (
 })
 
 // 「続けて」だけのプロンプトでも、直前の会話を一緒に渡す。会話に設計の依頼があるので、
-// Haiku は設計（design-hardest）と判断でき、fable / xhigh になる。
+// Haiku は設計（design-hardest）と判断でき、opus / xhigh になる。
 test('a short continuation is classified with the recent conversation', async ($, on) => {
   const seen = setup(on, () => 'design-hardest', () => [
     { role: 'user', text: '決済システムを設計して' },
@@ -175,7 +187,7 @@ test('a short continuation is classified with the recent conversation', async ($
   expect(seen.request.prompt).toContain('決済システムを設計して')
   expect(seen.request.prompt).toContain('<request>')
   expect(seen.request.prompt).toContain('続けて')
-  expect(seen.model).toBe('fable')
+  expect(seen.model).toBe('opus')
   expect(seen.effort).toBe('xhigh')
 })
 
@@ -277,11 +289,11 @@ test('a failed classification falls back to the session model', async ($, on) =>
   expect(seen.model).toBe('sonnet')
 })
 
-// 会話が読めなくても（session.messages が失敗）、今回のプロンプトだけで分類して、fable に切り替える。
+// 会話が読めなくても（session.messages が失敗）、今回のプロンプトだけで分類して、opus に切り替える。
 test('a failed messages read still classifies the request', async ($, on) => {
   const seen = setup(on, () => 'review-deep', () => new Error('no transcript'))
   await $.prompt.submit({ text: 'この変更をレビューして' })
   await step($)
   expect(seen.classified).toBe(1)
-  expect(seen.model).toBe('fable')
+  expect(seen.model).toBe('opus')
 })

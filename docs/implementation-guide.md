@@ -13,7 +13,7 @@ Claude Code に、プロンプトを送るたびに、次の 2 つを自動で�
 1. プロンプトの種類（設計・調査 / 実装 / レビュー / 雑談）と難易度を、**Haiku が分類する**。
 2. 分類の結果に応じて、**そのターンのメインのモデルと effort を切り替える**。
 
-たとえば、「複数リージョンの決済システムの設計方針を考えて」は Fable / xhigh、「README の誤字を直して」は Sonnet / high、「こんにちは」は切り替えなし、のようになります。元の要望は [docs/intent.md](intent.md) にあります。
+たとえば、「複数リージョンの決済システムの設計方針を考えて」は Opus / xhigh、「README の誤字を直して」は Sonnet / high、「こんにちは」は切り替えなし、のようになります。元の要望は [docs/intent.md](intent.md) にあります。
 
 **やらないこと**
 - 切り替えは、そのターンだけです。次のプロンプトで、もう一度分類します。
@@ -82,13 +82,13 @@ model-router/
 const ROUTES: Record<string, Route | null> = {
   'design-simple':      { model: 'opus',   effort: 'medium' },
   'design-moderate':    { model: 'opus',   effort: 'high' },
-  'design-complex':     { model: 'fable',  effort: 'high' },
-  'design-hardest':     { model: 'fable',  effort: 'xhigh' },
+  'design-complex':     { model: 'opus',   effort: 'high' },
+  'design-hardest':     { model: 'opus',   effort: 'xhigh' },
   'implement-simple':   { model: 'sonnet', effort: 'high' },
   'implement-moderate': { model: 'opus',   effort: 'high' },
   'implement-complex':  { model: 'opus',   effort: 'xhigh' },
   'review-standard':    { model: 'opus',   effort: 'xhigh' },
-  'review-deep':        { model: 'fable',  effort: 'xhigh' },
+  'review-deep':        { model: 'opus',   effort: 'xhigh' },
   'chat-or-question':   null,   // 切り替えない
 }
 const LABELS = Object.keys(ROUTES)
@@ -100,11 +100,11 @@ const LABELS = Object.keys(ROUTES)
 
 | 種類 | 軽い | | | 重い |
 |--|--|--|--|--|
-| 設計・調査 | opus / medium | opus / high | fable / high | fable / xhigh |
+| 設計・調査 | opus / medium | opus / high | opus / high | opus / xhigh |
 | 実装 | sonnet / high | opus / high | opus / xhigh | — |
-| レビュー | opus / xhigh | fable / xhigh | — | — |
+| レビュー | opus / xhigh | opus / xhigh | — | — |
 
-この対応は、`docs/intent.md` の表（シンプルな設計は Opus、複雑な設計は Fable、シンプルな実装は Sonnet、複雑な実装は Opus、レビューは xhigh）をもとにしています。
+この対応は、`docs/intent.md` の表をもとにしています。ただし、intent.md で Fable としていた複雑な設計と深いレビューは、Opus に替えています（`opus / high`、`opus / xhigh`）。**Fable は、プロンプトに「Fable で」と書いたときだけ使います**（4.2 の②）。
 
 ### 4.2 判定の優先順位（`prompt.submit`）
 
@@ -200,28 +200,29 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 | 種類 | 実行 | 内容 |
 |--|--|--|
 | 静的な確認 | `python3 -m unittest discover tests` | plugin.json と marketplace.json の整合、`hooks.json` が mod だけを読むこと、`register.ts` が 2 つのフックを持つこと |
-| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 17 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
+| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 18 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
 | 検証 | `claude plugin validate .` | `prompt.submit` と `turn.step` を hook し、`$.model.complete`、`$.session.messages`、`$.ui.status` を呼ぶことの確認 |
 
-`claude plugin test` の 17 ケース（`hooks/register.test.ts`）:
+`claude plugin test` の 18 ケース（`hooks/register.test.ts`）:
 
-1. レビューのプロンプトで、Fable / xhigh に切り替わる
-2. 雑談では、切り替えない
-3. 明示したモデルは、分類より優先される（Haiku を呼ばない）
-4. subagent のステップは、書き換えない
-5. 分類が失敗したら、切り替えない
-6. 切り替えたターンに、名乗りの添え書きがつく
-7. 雑談のターンには、切り替えるまで添え書きがつかず、切り替えたあとの雑談では打ち消しの添え書きがつく
-8. Haiku を、effort low、最大 20 トークン、10 秒までで呼び、システムプロンプトにすべてのラベルの基準が入る
-9. 「続けて」は、直前の会話とともに分類に渡り、直前と同じ作業として切り替わる
-10. 会話は、本文のある最後の 4 件だけを、各 500 文字までで渡す
-11. このプラグインの添え書きは、会話から除く
-12. 今回のプロンプトが会話の最後に入っていても、二重に渡さない
-13. 返事の前後に余計な文字（バッククォート、句読点、改行）があっても、ラベルを拾う
-14. ラベルでない返事では、切り替えない
-15. 応答のない呼び出しでは、切り替えない
-16. 会話が読めなくても、今回のプロンプトだけで分類する
-17. ツールを使ったターンのように同じ側の発言が続いても、1 件にまとめるので、2 往復ぶんが渡る
+1. レビューのプロンプトで、Opus / xhigh に切り替わる
+2. どのラベルでも、分類の結果は Fable にならない（Fable は明示したときだけ）
+3. 雑談では、切り替えない
+4. 明示したモデルは、分類より優先される（Haiku を呼ばない）
+5. subagent のステップは、書き換えない
+6. 分類が失敗したら、切り替えない
+7. 切り替えたターンに、名乗りの添え書きがつく
+8. 雑談のターンには、切り替えるまで添え書きがつかず、切り替えたあとの雑談では打ち消しの添え書きがつく
+9. Haiku を、effort low、最大 20 トークン、10 秒までで呼び、システムプロンプトにすべてのラベルの基準が入る
+10. 「続けて」は、直前の会話とともに分類に渡り、直前と同じ作業として切り替わる
+11. 会話は、本文のある最後の 4 件だけを、各 500 文字までで渡す
+12. このプラグインの添え書きは、会話から除く
+13. 今回のプロンプトが会話の最後に入っていても、二重に渡さない
+14. 返事の前後に余計な文字（バッククォート、句読点、改行）があっても、ラベルを拾う
+15. ラベルでない返事では、切り替えない
+16. 応答のない呼び出しでは、切り替えない
+17. 会話が読めなくても、今回のプロンプトだけで分類する
+18. ツールを使ったターンのように同じ側の発言が続いても、1 件にまとめるので、2 往復ぶんが渡る
 
 **テストでできないこと:** Haiku の返事は差し替えているので、Haiku が基準どおりのラベルを選ぶかは、テストでは確かめられません。それは、実機で見る必要があります。
 

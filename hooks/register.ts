@@ -15,16 +15,17 @@ type Route = { model: string; effort: 'medium' | 'high' | 'xhigh' }
 
 // 分類ラベル → モデルと effort。docs/superpowers/specs の 5.1 の表と同じ。null は切り替えない（セッションのモデルのまま）。
 // ラベルを足すときは、下の CRITERIA にも、そのラベルの判断基準を 1 行足す（Haiku が選べるようにするため）。
+// Fable は、ここには入れない。プロンプトに「Fable で」と書いたとき（下の EXPLICIT）だけ使う。
 const ROUTES: Record<string, Route | null> = {
   'design-simple': { model: 'opus', effort: 'medium' },
   'design-moderate': { model: 'opus', effort: 'high' },
-  'design-complex': { model: 'fable', effort: 'high' },
-  'design-hardest': { model: 'fable', effort: 'xhigh' },
+  'design-complex': { model: 'opus', effort: 'high' },
+  'design-hardest': { model: 'opus', effort: 'xhigh' },
   'implement-simple': { model: 'sonnet', effort: 'high' },
   'implement-moderate': { model: 'opus', effort: 'high' },
   'implement-complex': { model: 'opus', effort: 'xhigh' },
   'review-standard': { model: 'opus', effort: 'xhigh' },
-  'review-deep': { model: 'fable', effort: 'xhigh' },
+  'review-deep': { model: 'opus', effort: 'xhigh' },
   'chat-or-question': null,
 }
 // Haiku に選ばせるラベルの一覧（ROUTES のキー）。返事の照合にも使う。
