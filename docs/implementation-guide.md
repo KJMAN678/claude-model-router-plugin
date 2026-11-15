@@ -22,28 +22,81 @@ Claude Code に、プロンプトを送るたびに、次の 2 つを自動で�
 
 ## 2. 全体の流れ
 
+### 2.1 mod の基本（読む前に知っておくこと）
+
+mod は、Claude Code の中で動く TypeScript のモジュールです。`register` という関数を 1 つ書き、その中で、どのイベントで何をするかを登録します。
+
+```ts
+export const register: Register = on => {
+  on('イベント名', async ($, e, next) => {
+    // e    : そのイベントの入力（プロンプトの本文、送ろうとしているモデル名など）
+    // $    : Claude Code の機能を呼ぶ窓口（$.model.complete で別のモデルを呼ぶ、など）
+    // next : 処理を先へ進める。next(e) ならそのまま、next({ ...e, x }) なら入力を書き換えて進める
+    return next(e)
+  })
+}
 ```
- あなたがプロンプトを送る
-        │
-        ▼
- ┌─ prompt.submit フック ────────────────────────────────┐
- │ 1. スラッシュコマンドなら、何もしない                   │
- │ 2. 「Fable で」などの明示があれば、それを採用           │
- │ 3. それ以外は、判断基準と直前の会話を渡して Haiku で分類 │
- │    → ラベル → モデルと effort                          │
- │ 4. ステータス行に「このターン: …」と出す               │
- │ 5. 名乗りの添え書きをプロンプトにつける                 │
- └────────────────────────────────────────────────────────┘
-        │  （判定結果は、モジュール変数 pick に入れて持つ）
-        ▼
- ┌─ turn.step フック（モデルへのリクエストを送る直前、毎回）┐
- │ subagent でなく、pick があれば、                         │
- │ リクエストの model と effort を pick の値に書き換える    │
- └──────────────────────────────────────────────────────────┘
-        │
-        ▼
- 指定したモデルが応答する
+
+この登録した関数を「フック」と呼びます。model-router が使うフックは、次の 2 つだけです。
+
+| フック | 呼ばれるとき | 入力 `e` にあるもの |
+|--|--|--|
+| `prompt.submit` | プロンプトを送った直後（モデルを呼ぶ前）に 1 回 | プロンプトの本文（`e.text`） |
+| `turn.step` | モデルへのリクエストを送る直前に、毎回（1 ターンに何度か） | 送ろうとしているモデル名と effort（`e.model`、`e.effort`） |
+
+### 2.2 フローチャート: 読み取る → 判断する → 切り替える
+
+```mermaid
+flowchart TD
+    U(["あなたがプロンプトを送る"]) --> A1
+
+    subgraph S1["① プロンプトを読み取る（prompt.submit フック）"]
+        A1["on('prompt.submit', …)<br/>e.text がプロンプトの本文"]
+        A1 --> A2{"スラッシュコマンド、<br/>または人が打っていない？<br/>（e.command / e.isMeta）"}
+    end
+
+    A2 -- はい --> SKIP(["何もせず先へ<br/>next(e)"])
+    A2 -- いいえ --> B1
+
+    subgraph S2["② 判断する（prompt.submit フックの続き）"]
+        B1{"「Fable で」などの明示がある？<br/>EXPLICIT.exec(e.text)"}
+        B1 -- ある --> B2["pick = 書いたモデル / high<br/>（Haiku は呼ばない）"]
+        B1 -- ない --> B3["直前の会話を読む<br/>$.session.messages()"]
+        B3 --> B4["Haiku に渡す本文を作る<br/>conversation(messages, e.text)"]
+        B4 --> B5["Haiku にラベルを 1 つ選ばせる<br/>$.model.complete({ model: 'haiku',<br/>system: CRITERIA, … })"]
+        B5 --> B6["返事からラベルを取り出す<br/>parseLabel(r.text)"]
+        B6 --> B7["ラベルを表で引く<br/>pick = ROUTES[label]"]
+        B2 --> B8
+        B7 --> B8["結果を画面と名乗りに反映<br/>$.ui.status(…)<br/>identityNote(pick, hasNoted) → e.context"]
+    end
+
+    B8 -- "pick（モジュール変数）に入れて持つ" --> C1
+
+    subgraph S3["③ モデルと effort を切り替える（turn.step フック）"]
+        C1["on('turn.step', …)<br/>リクエストを送る直前に毎回呼ばれる"]
+        C1 --> C2{"subagent のリクエスト？<br/>または pick が null？"}
+        C2 -- はい --> C3["書き換えない<br/>next(e)"]
+        C2 -- いいえ --> C4["model と effort を書き換える<br/>next({ ...e, model: pick.model,<br/>effort: pick.effort })"]
+    end
+
+    C3 --> R1(["セッションのモデルが応答する"])
+    C4 --> R2(["pick のモデルと effort で応答する"])
 ```
+
+### 2.3 各段とコードの対応
+
+| 段 | やること | コード（[hooks/register.ts](../hooks/register.ts)） |
+|--|--|--|
+| ① 読み取る | プロンプトの本文を受け取る。スラッシュコマンドなどは素通しする | `on('prompt.submit', …)` の先頭。`e.text` が本文、`e.command` / `e.isMeta` で素通しを判断 |
+| ② 判断する | (a) モデルの明示があれば、それを使う | `EXPLICIT`（正規表現）と `EXPLICIT.exec(e.text)` |
+| | (b) なければ、判断基準と直前の会話を Haiku に渡して、ラベルを選ばせる | `CRITERIA`（判断基準の文章）、`conversation()`（会話を整える）、`$.model.complete()`（Haiku を呼ぶ）、`parseLabel()`（返事からラベルを拾う） |
+| | (c) ラベルをモデルと effort に置き換え、`pick` に入れる | `ROUTES`（ラベル → モデルと effort の表）。`pick = ROUTES[label]` |
+| | (d) 結果を、ステータス行と名乗りの添え書きに出す | `$.ui.status()`、`identityNote()`、`next({ ...e, context })` |
+| ③ 切り替える | リクエストを送る直前に、`pick` の値で model と effort を書き換える | `on('turn.step', …)`。`next({ ...e, model: pick.model, effort: pick.effort })` |
+
+分類に失敗したとき（Haiku が答えない、返事にラベルがない、例外）と、雑談のときは、`pick` が `null` になります。③ は何も書き換えず、セッションのモデルのまま応答します。
+
+### 2.4 なぜフックを 2 つに分けるのか
 
 ポイントは、フックが 2 つに分かれていることです。
 
