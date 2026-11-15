@@ -2,7 +2,7 @@
 
 この文書は、model-router プラグインが「どう動くか」「なぜその作りにしたか」を説明します。
 
-- 対象のバージョン: 0.2.2（`main` に入っている版）
+- 対象のバージョン: 0.3.0（`main` に入っている版）
 - 設計の正式な記録は [spec](superpowers/specs/2026-11-10-model-router-design.md)。この文書は、読み物として書き直した解説です。
 - 使い方だけ知りたいときは、リポジトリ直下の [README](../README.md) を読んでください。
 
@@ -13,7 +13,7 @@ Claude Code に、プロンプトを送るたびに、次の 2 つを自動で�
 1. プロンプトの種類（設計・調査 / 実装 / レビュー / 雑談）と難易度を、**Haiku が分類する**。
 2. 分類の結果に応じて、**そのターンのメインのモデルと effort を切り替える**。
 
-たとえば、「複数リージョンの決済システムの設計方針を考えて」は Fable / xhigh、「README の誤字を直して」は Sonnet / high、「こんにちは」は切り替えなし、のようになります。元の要望は [docs/intent.md](intent.md) にあります。
+たとえば、「複数リージョンの決済システムの設計方針を考えて」は Opus / xhigh、「README の誤字を直して」は Sonnet / high、「こんにちは」は切り替えなし、のようになります。元の要望は [docs/intent.md](intent.md) にあります。
 
 **やらないこと**
 - 切り替えは、そのターンだけです。次のプロンプトで、もう一度分類します。
@@ -22,28 +22,81 @@ Claude Code に、プロンプトを送るたびに、次の 2 つを自動で�
 
 ## 2. 全体の流れ
 
+### 2.1 mod の基本（読む前に知っておくこと）
+
+mod は、Claude Code の中で動く TypeScript のモジュールです。`register` という関数を 1 つ書き、その中で、どのイベントで何をするかを登録します。
+
+```ts
+export const register: Register = on => {
+  on('イベント名', async ($, e, next) => {
+    // e    : そのイベントの入力（プロンプトの本文、送ろうとしているモデル名など）
+    // $    : Claude Code の機能を呼ぶ窓口（$.model.complete で別のモデルを呼ぶ、など）
+    // next : 処理を先へ進める。next(e) ならそのまま、next({ ...e, x }) なら入力を書き換えて進める
+    return next(e)
+  })
+}
 ```
- あなたがプロンプトを送る
-        │
-        ▼
- ┌─ prompt.submit フック ────────────────────────────────┐
- │ 1. スラッシュコマンドなら、何もしない                   │
- │ 2. 「Fable で」などの明示があれば、それを採用           │
- │ 3. 短い「続けて」なら、前回の判定を引き継ぐ             │
- │ 4. それ以外は Haiku で分類 → ラベル → モデルと effort   │
- │ 5. ステータス行に「このターン: …」と出す               │
- │ 6. 名乗りの添え書きをプロンプトにつける                 │
- └────────────────────────────────────────────────────────┘
-        │  （判定結果は、モジュール変数 pick に入れて持つ）
-        ▼
- ┌─ turn.step フック（モデルへのリクエストを送る直前、毎回）┐
- │ subagent でなく、pick があれば、                         │
- │ リクエストの model と effort を pick の値に書き換える    │
- └──────────────────────────────────────────────────────────┘
-        │
-        ▼
- 指定したモデルが応答する
+
+この登録した関数を「フック」と呼びます。model-router が使うフックは、次の 2 つだけです。
+
+| フック | 呼ばれるとき | 入力 `e` にあるもの |
+|--|--|--|
+| `prompt.submit` | プロンプトを送った直後（モデルを呼ぶ前）に 1 回 | プロンプトの本文（`e.text`） |
+| `turn.step` | モデルへのリクエストを送る直前に、毎回（1 ターンに何度か） | 送ろうとしているモデル名と effort（`e.model`、`e.effort`） |
+
+### 2.2 フローチャート: 読み取る → 判断する → 切り替える
+
+```mermaid
+flowchart TD
+    U(["あなたがプロンプトを送る"]) --> A1
+
+    subgraph S1["① プロンプトを読み取る（prompt.submit フック）"]
+        A1["on('prompt.submit', …)<br/>e.text がプロンプトの本文"]
+        A1 --> A2{"スラッシュコマンド、<br/>または人が打っていない？<br/>（e.command / e.isMeta）"}
+    end
+
+    A2 -- はい --> SKIP(["何もせず先へ<br/>next(e)"])
+    A2 -- いいえ --> B1
+
+    subgraph S2["② 判断する（prompt.submit フックの続き）"]
+        B1{"「Fable で」などの明示がある？<br/>EXPLICIT.exec(e.text)"}
+        B1 -- ある --> B2["pick = 書いたモデル / high<br/>（Haiku は呼ばない）"]
+        B1 -- ない --> B3["直前の会話を読む<br/>$.session.messages()"]
+        B3 --> B4["Haiku に渡す本文を作る<br/>conversation(messages, e.text)"]
+        B4 --> B5["Haiku にラベルを 1 つ選ばせる<br/>$.model.complete({ model: 'haiku',<br/>system: CRITERIA, … })"]
+        B5 --> B6["返事からラベルを取り出す<br/>parseLabel(r.text)"]
+        B6 --> B7["ラベルを表で引く<br/>pick = ROUTES[label]"]
+        B2 --> B8
+        B7 --> B8["結果を画面と名乗りに反映<br/>$.ui.status(…)<br/>identityNote(pick, hasNoted) → e.context"]
+    end
+
+    B8 -- "pick（モジュール変数）に入れて持つ" --> C1
+
+    subgraph S3["③ モデルと effort を切り替える（turn.step フック）"]
+        C1["on('turn.step', …)<br/>リクエストを送る直前に毎回呼ばれる"]
+        C1 --> C2{"subagent のリクエスト？<br/>または pick が null？"}
+        C2 -- はい --> C3["書き換えない<br/>next(e)"]
+        C2 -- いいえ --> C4["model と effort を書き換える<br/>next({ ...e, model: pick.model,<br/>effort: pick.effort })"]
+    end
+
+    C3 --> R1(["セッションのモデルが応答する"])
+    C4 --> R2(["pick のモデルと effort で応答する"])
 ```
+
+### 2.3 各段とコードの対応
+
+| 段 | やること | コード（[hooks/register.ts](../hooks/register.ts)） |
+|--|--|--|
+| ① 読み取る | プロンプトの本文を受け取る。スラッシュコマンドなどは素通しする | `on('prompt.submit', …)` の先頭。`e.text` が本文、`e.command` / `e.isMeta` で素通しを判断 |
+| ② 判断する | (a) モデルの明示があれば、それを使う | `EXPLICIT`（正規表現）と `EXPLICIT.exec(e.text)` |
+| | (b) なければ、判断基準と直前の会話を Haiku に渡して、ラベルを選ばせる | `CRITERIA`（判断基準の文章）、`conversation()`（会話を整える）、`$.model.complete()`（Haiku を呼ぶ）、`parseLabel()`（返事からラベルを拾う） |
+| | (c) ラベルをモデルと effort に置き換え、`pick` に入れる | `ROUTES`（ラベル → モデルと effort の表）。`pick = ROUTES[label]` |
+| | (d) 結果を、ステータス行と名乗りの添え書きに出す | `$.ui.status()`、`identityNote()`、`next({ ...e, context })` |
+| ③ 切り替える | リクエストを送る直前に、`pick` の値で model と effort を書き換える | `on('turn.step', …)`。`next({ ...e, model: pick.model, effort: pick.effort })` |
+
+分類に失敗したとき（Haiku が答えない、返事にラベルがない、例外）と、雑談のときは、`pick` が `null` になります。③ は何も書き換えず、セッションのモデルのまま応答します。
+
+### 2.4 なぜフックを 2 つに分けるのか
 
 ポイントは、フックが 2 つに分かれていることです。
 
@@ -82,46 +135,54 @@ model-router/
 const ROUTES: Record<string, Route | null> = {
   'design-simple':      { model: 'opus',   effort: 'medium' },
   'design-moderate':    { model: 'opus',   effort: 'high' },
-  'design-complex':     { model: 'fable',  effort: 'high' },
-  'design-hardest':     { model: 'fable',  effort: 'xhigh' },
+  'design-complex':     { model: 'opus',   effort: 'high' },
+  'design-hardest':     { model: 'opus',   effort: 'xhigh' },
   'implement-simple':   { model: 'sonnet', effort: 'high' },
   'implement-moderate': { model: 'opus',   effort: 'high' },
   'implement-complex':  { model: 'opus',   effort: 'xhigh' },
   'review-standard':    { model: 'opus',   effort: 'xhigh' },
-  'review-deep':        { model: 'fable',  effort: 'xhigh' },
+  'review-deep':        { model: 'opus',   effort: 'xhigh' },
   'chat-or-question':   null,   // 切り替えない
 }
 const LABELS = Object.keys(ROUTES)
 ```
 
 - これが、振り分けのルールのすべてです。変えたいときは、この表を編集します。
-- キーの名前が、そのまま Haiku に渡す分類のラベルになります。`$.model.classify` は、**ラベルを選ぶだけで、判断の基準の文章は渡せません**。そのため、ラベル名だけで意味が分かるように、`design-simple` のような自己説明的な名前にしています。
+- キーの名前が、そのまま Haiku に渡す分類のラベルになります。各ラベルの判断基準は、同じファイルの `CRITERIA` に文章で書いてあり、Haiku にはそれをシステムプロンプトとして渡します（4.2）。
 - `null` は「切り替えない」で、そのターンは、セッションに設定されたモデルのまま動きます。
 
 | 種類 | 軽い | | | 重い |
 |--|--|--|--|--|
-| 設計・調査 | opus / medium | opus / high | fable / high | fable / xhigh |
+| 設計・調査 | opus / medium | opus / high | opus / high | opus / xhigh |
 | 実装 | sonnet / high | opus / high | opus / xhigh | — |
-| レビュー | opus / xhigh | fable / xhigh | — | — |
+| レビュー | opus / xhigh | opus / xhigh | — | — |
 
-この対応は、`docs/intent.md` の表（シンプルな設計は Opus、複雑な設計は Fable、シンプルな実装は Sonnet、複雑な実装は Opus、レビューは xhigh）をもとにしています。
+この対応は、`docs/intent.md` の表をもとにしています。ただし、intent.md で Fable としていた複雑な設計と深いレビューは、Opus に替えています（`opus / high`、`opus / xhigh`）。**Fable は、プロンプトに「Fable で」と書いたときだけ使います**（4.2 の②）。
 
 ### 4.2 判定の優先順位（`prompt.submit`）
 
 ```ts
 on('prompt.submit', async ($, e, next) => {
-  if (e.command || e.isMeta) return next(e)          // ① 何もしない
+  if (e.command || e.isMeta) return next(e)
+
   const explicit = EXPLICIT.exec(e.text)
-  if (explicit) {                                      // ② モデルの明示
+  if (explicit) {
     pick = { model: explicit[1]!.toLowerCase(), effort: 'high' }
-  } else if (pick && e.text.length <= 30 && CONTINUATION.test(e.text)) {
-    // ③ 短い続き: 前回の判定のまま
-  } else {                                             // ④ 分類
+  } else {
     try {
-      const label = await $.model.classify(e.text, LABELS)
+      const messages = await $.session.messages().catch(() => [])
+      const r = await $.model.complete({
+        model: 'haiku',
+        system: CRITERIA,
+        prompt: conversation(messages, e.text),
+        maxTokens: 20,
+        effort: 'low',
+        timeoutMs: 10000,
+      })
+      const label = r.isAnswered ? parseLabel(r.text) : undefined
       pick = label === undefined ? null : (ROUTES[label] ?? null)
     } catch {
-      pick = null                                      // 失敗したら切り替えない
+      pick = null // 分類に失敗したら、切り替えずにセッションのモデルで続ける。
     }
   }
   ...
@@ -134,11 +195,15 @@ on('prompt.submit', async ($, e, next) => {
 |--|--|--|
 | ① | スラッシュコマンド（`e.command`）、または人が打っていないプロンプト（`e.isMeta`） | 判定を変えず、そのまま通す |
 | ② | 「Fable で」「opus を使って」「sonnet に切り替えて」のような、モデルの明示 | そのモデルと effort high。**分類は呼ばない** |
-| ③ | 前回の判定があり、30 文字以下で、「続けて」「続き」「それで」「そこ」「それ」「さっき」などで始まる | 前回の判定を引き継ぐ。**分類は呼ばない** |
-| ④ | 上のどれでもない | Haiku で分類して、`ROUTES` で引く |
+| ③ | 上のどれでもない | Haiku で分類して、`ROUTES` で引く |
 
-- ②と③で分類を呼ばないのは、無駄な Haiku の呼び出しを避けるためと、③では、短い文では分類が当てにならないためです。
-- ④で、ラベルが決まらなかった（`undefined`）ときと、API が失敗した（例外）ときは、`pick = null` にして、切り替えずにセッションのモデルで続けます。分類の失敗で、作業が止まることはありません。
+- ②で分類を呼ばないのは、モデルの名前が書いてあれば、それで確実に決まるためです。
+- ③では、`$.model.complete` で Haiku（effort low、最大 20 トークン、10 秒まで）を 1 回呼びます。渡すのは次の 2 つです。
+  - システムプロンプト: `CRITERIA`（各ラベルの判断基準と、答え方の指示）
+  - 本文: 直前の会話（同じ側の発言が続いたら 1 件にまとめたうえで、本文のある最後の 4 件、つまり 2 往復。1 発言 500 文字まで。ツールの出力と、このプラグインの添え書きは除く）を `<conversation>`、今回のプロンプトを `<request>` で囲んだもの
+- 「続けて」のような短い続きも、会話を見た Haiku が、直前の作業と同じラベルを選びます。以前は先頭の語を正規表現で見ていましたが、「その件だけど…」のような言い方を取りこぼすため、0.3.0 でやめました。
+- 構造化出力は mod の API にないので、ラベルを 1 語で答えさせ、返事に含まれるラベルを拾います。
+- ③で、返事にラベルがなかったときと、API が失敗したときは、`pick = null` にして、切り替えずにセッションのモデルで続けます。分類の失敗で、作業が止まることはありません。
 
 ### 4.3 モデルの書き換え（`turn.step`）
 
@@ -181,28 +246,38 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 
 ### 4.6 状態の持ち方
 
-`pick` と `hasNoted` は、モジュールの変数です。そのため、mod を**再読み込みすると消えます**。影響は、直後の「続けて」の判定が 1 回外れる程度なので、`$.state`（セッションが保持する値）にはしていません（コードに `ponytail:` のコメントで残してあります）。
+`pick` と `hasNoted` は、モジュールの変数です。そのため、mod を**再読み込みすると消えます**。影響は、ターンの途中で再読み込みしたときに、そのターンの残りが切り替わらない程度なので、`$.state`（セッションが保持する値）にはしていません（コードに `ponytail:` のコメントで残してあります）。
 
 ## 5. テスト
 
 | 種類 | 実行 | 内容 |
 |--|--|--|
 | 静的な確認 | `python3 -m unittest discover tests` | plugin.json と marketplace.json の整合、`hooks.json` が mod だけを読むこと、`register.ts` が 2 つのフックを持つこと |
-| mod の単体テスト | `claude plugin test .` | 分類の結果を差し替えて、下の 8 ケースを確かめる。API は呼ばない |
-| 検証 | `claude plugin validate .` | `prompt.submit` と `turn.step` を hook し、`$.model.classify` と `$.ui.status` を呼ぶことの確認 |
+| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 18 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
+| 検証 | `claude plugin validate .` | `prompt.submit` と `turn.step` を hook し、`$.model.complete`、`$.session.messages`、`$.ui.status` を呼ぶことの確認 |
 
-`claude plugin test` の 8 ケース（`hooks/register.test.ts`）:
+`claude plugin test` の 18 ケース（`hooks/register.test.ts`）:
 
-1. レビューのプロンプトで、Fable / xhigh に切り替わる
-2. 雑談では、切り替えない
-3. 短い続きは、分類せず前回の判定を引き継ぐ
-4. 明示したモデルは、分類より優先される
+1. レビューのプロンプトで、Opus / xhigh に切り替わる
+2. どのラベルでも、分類の結果は Fable にならない（Fable は明示したときだけ）
+3. 雑談では、切り替えない
+4. 明示したモデルは、分類より優先される（Haiku を呼ばない）
 5. subagent のステップは、書き換えない
 6. 分類が失敗したら、切り替えない
 7. 切り替えたターンに、名乗りの添え書きがつく
 8. 雑談のターンには、切り替えるまで添え書きがつかず、切り替えたあとの雑談では打ち消しの添え書きがつく
+9. Haiku を、effort low、最大 20 トークン、10 秒までで呼び、システムプロンプトにすべてのラベルの基準が入る
+10. 「続けて」は、直前の会話とともに分類に渡り、直前と同じ作業として切り替わる
+11. 会話は、本文のある最後の 4 件だけを、各 500 文字までで渡す
+12. このプラグインの添え書きは、会話から除く
+13. 今回のプロンプトが会話の最後に入っていても、二重に渡さない
+14. 返事の前後に余計な文字（バッククォート、句読点、改行）があっても、ラベルを拾う
+15. ラベルでない返事では、切り替えない
+16. 応答のない呼び出しでは、切り替えない
+17. 会話が読めなくても、今回のプロンプトだけで分類する
+18. ツールを使ったターンのように同じ側の発言が続いても、1 件にまとめるので、2 往復ぶんが渡る
 
-**テストでできないこと:** 分類は差し替えているので、Haiku が表どおりのラベルを選ぶかは、テストでは確かめられません。それは、実機で見る必要があります。
+**テストでできないこと:** Haiku の返事は差し替えているので、Haiku が基準どおりのラベルを選ぶかは、テストでは確かめられません。それは、実機で見る必要があります。
 
 ## 6. 方式を 3 回変えた経緯
 
@@ -231,7 +306,7 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 | 新しく開いたセッションに、インストールした版で「Fable で、一言あいさつして」 | fable / high | fable-5-2 / high |
 
 **確認できていないこと**
-- 実装・レビューの分類と、「続けて」の引き継ぎ（単体テストでは通っているが、実機では試していない）
+- 0.3.0 の分類（判断基準と直前の会話を渡す方式）の実機での精度。実装・レビューの分類と、「続けて」の扱いは、単体テストでは通っているが、実機では試していない
 - auto モードでの動き、CLI（`claude -p`）での動き
 - 切り替えによる費用の増減（測っていない）
 
@@ -259,7 +334,7 @@ mod から、セッションに設定されたモデルを変える方法は、�
 |--|--|
 | 要件 | Claude Code の新しい版が必要。mod が動くのは、ターミナルと Claude Desktop の Code タブ。確認できているのは 2.1.321 で、v2.1.309 以上という要件は、公式ドキュメントでは未確認 |
 | 読み込みのタイミング | インストールした版は、**新しく開いたセッション**で読み込まれる。動いているセッションには、`/reload-plugins` をしても入らなかった |
-| 続けて、の判定 | 先頭の語を見る簡単な方法。「その件だけど…」のような言い方は、分類にまわる |
+| 分類の費用 | プロンプトごとに Haiku を 1 回呼ぶ。直前 4 件ぶん（最大 2,000 文字）の会話も毎回渡す |
 | スラッシュコマンド | そのターンでは判定を変えず、添え書きもしない。直前の判定で切り替わったターンは、名乗りが合わない |
 | 添え書き | モデルへの指示なので、必ず従うとは限らない |
 | 指定のモデルが使えない | 組織の `availableModels` の制限や、プランで使えないモデルは、Claude Code が別のモデルに置き換える |
@@ -272,8 +347,9 @@ mod から、セッションに設定されたモデルを変える方法は、�
 - 試すだけなら: `claude --plugin-dir <このリポジトリ>`
 
 **振り分けを変える**
-- `hooks/register.ts` の `ROUTES` の、モデルと effort を書き換えます。ラベルを増やしたいときは、`ROUTES` にキーを足します（それが、そのまま分類の選択肢になります）。
-- モデルの明示の言い方を増やしたいときは `EXPLICIT`、続けて、の言い方を増やしたいときは `CONTINUATION` の正規表現を直します。
+- `hooks/register.ts` の `ROUTES` の、モデルと effort を書き換えます。ラベルを増やしたいときは、`ROUTES` にキーを足し、`CRITERIA` にそのラベルの判断基準を 1 行足します。
+- 判断の境目を変えたいときは、`CRITERIA` の文章を直します。
+- モデルの明示の言い方を増やしたいときは、`EXPLICIT` の正規表現を直します。
 
 **変えたあと**
 1. `claude plugin test .` と、`python3 -m unittest discover tests` を実行する。
