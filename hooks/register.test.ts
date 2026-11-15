@@ -24,12 +24,18 @@ const LABELS = [
   'review-standard', 'review-deep', 'chat-or-question',
 ]
 
-// ベースにあるエンジンの代わりに、Haiku の返事と会話を差し替え、turn.step が受け取った model / effort を記録する。
-// 返す seen に、各テストが確かめたい値が溜まる。
-//   model / effort : turn.step が受け取った値（register.ts が書き換えたあと）
-//   classified     : Haiku を呼んだ回数
-//   request        : Haiku を呼んだときの引数（model、system、prompt など）
-//   context        : prompt.submit が足した添え書き
+/**
+ * ベースにあるエンジンの代わりに、Haiku の返事と会話を差し替え、turn.step が受け取った model / effort を記録する。
+ *
+ * @param on テストが渡す、フックの登録関数。差し替えのフックは、テスト対象の mod の下に置かれる。
+ * @param reply Haiku の返事を返す関数（Reply を参照）。テストの途中で返す値を変えられるよう、値でなく関数にしている。
+ * @param messages それまでの会話を返す関数。Error を返すと、会話の読み込みが失敗した状況になる。省略すると空の会話。
+ * @returns 各テストが確かめたい値が溜まるオブジェクト `seen`。
+ *   - model / effort: turn.step が受け取った値（register.ts が書き換えたあと）
+ *   - classified: Haiku を呼んだ回数
+ *   - request: Haiku を呼んだときの引数（model、system、prompt など）
+ *   - context: prompt.submit が足した添え書き
+ */
 function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () => []) {
   const seen = { model: '', effort: undefined as unknown, classified: 0, context: [] as readonly string[], request: undefined as any }
   // $.model.complete の差し替え。Haiku の代わりに reply() の内容を返す。
@@ -62,7 +68,13 @@ function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () =
   return seen
 }
 
-// モデルへのリクエストを 1 回送る（セッションのモデルは sonnet / high）。agentId をつけると、subagent のリクエストになる。
+/**
+ * モデルへのリクエストを 1 回送る（セッションのモデルは sonnet / high）。
+ *
+ * @param $ テストが渡す、エンジンの API。
+ * @param agentId 指定すると、subagent のリクエストとして送る。省略すると、メインのリクエスト。
+ * @returns リクエストの処理が終わると解決する Promise。結果は返さず、setup の `seen` に model と effort が記録される。
+ */
 async function step($: any, agentId?: string) {
   const s = $.turn.step({ turnId: 't', index: 0, model: 'sonnet', effort: 'high', messageCount: 1, agentId })
   for await (const _ of s) { /* 流れてくる chunk は使わない */ }
