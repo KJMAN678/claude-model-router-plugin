@@ -8,7 +8,37 @@
 //   2. turn.step: モデルへのリクエストを送る直前に、pick の値で model と effort を書き換える
 //
 // 分類に失敗したときや、雑談のときは pick が null になり、何も書き換えない（セッションのモデルのまま）。
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+import { emptyTotals, family, parseTotals, recordClassifier, recordStep, report, type Totals } from './savings'
+
+// 削減額の累計を保存する $.store のキー。セッションをまたいで残る。
+const TOTALS_KEY = 'savings-totals'
+
+/**
+ * 利用量を 1 件、$.store の累計に足して保存する。保存に失敗しても、切り替えは止めない。
+ * （$ を受け取る関数は、エンジンの決まりでファイルの一番上に置く。）
+ *
+ * @param prev このセッションの直前のリクエスト。累計の比較にはこちらを使い、
+ *             前のセッションの最後のモデルと比べて、切り替えたと誤って数えないようにする。
+ * @param apply 足し込む関数（recordStep か recordClassifier）。
+ */
+async function addToTotal($: EngineInterface, prev: Pick<Totals, 'prevModel' | 'prevPrompt'>, apply: (t: Totals) => Totals) {
+  try {
+    const total = parseTotals(await $.store.get(TOTALS_KEY))
+    await $.store.set(TOTALS_KEY, apply({ ...total, ...prev }))
+  } catch {
+    // 保存できなくても、このセッションの分は残る。
+  }
+}
+
+/** $.store の累計を読む。読めなければ空の累計。 */
+async function readTotal($: EngineInterface): Promise<Totals> {
+  try {
+    return parseTotals(await $.store.get(TOTALS_KEY))
+  } catch {
+    return emptyTotals()
+  }
+}
 
 // 切り替え先。model は 'opus' のような短い名前、effort はそのターンの考える深さ。
 type Route = { model: string; effort: 'medium' | 'high' | 'xhigh' }
@@ -153,6 +183,35 @@ export const register: Register = on => {
   // ponytail: モジュール変数なので、mod の再読み込みで消える。ターンの途中で再読み込みすると、そのターンの残りは切り替わらない。
   let pick: Route | null = null
   let hasNoted = false
+  // このセッションの削減額の記録。累計は $.store にある。
+  // ponytail: モジュール変数なので、mod の再読み込みで 0 に戻る（累計は残る）。
+  let session: Totals = emptyTotals()
+
+  // 利用量をこのセッションの分に足し、足す前の「直前のリクエスト」を返す（累計の比較に使う）。
+  const bump = (apply: (t: Totals) => Totals) => {
+    const prev = { prevModel: session.prevModel, prevPrompt: session.prevPrompt }
+    session = apply(session)
+    return prev
+  }
+
+  // /savings を登録する。名前はエンジンが返したもの（プラグイン名で区切られることがある）を使う。
+  let savingsCommand = 'savings'
+  on('session.start', async ($, e, next) => {
+    try {
+      const r = await $.command.register({ name: 'savings', description: '基準のモデル（既定は opus）と比べた、削減額の推定を表示する' })
+      savingsCommand = r.command
+    } catch {
+      // 登録できなくても、切り替えは続ける。
+    }
+    return next(e)
+  })
+
+  // /savings [基準のモデル]: このセッションと累計の削減額を表示する。
+  on('command.run', async ($, e, next) => {
+    if (e.command !== savingsCommand) return next(e)
+    const baseline = family(e.args.trim()) ?? 'opus'
+    return { text: report(session, await readTotal($), baseline) }
+  })
 
   // 1. プロンプトを送った直後（モデルを呼ぶ前）に呼ばれる。ここで行き先を決める。
   on('prompt.submit', async ($, e, next) => {
@@ -179,6 +238,11 @@ export const register: Register = on => {
           effort: 'low',
           timeoutMs: 10000,
         })
+        // 分類の費用を、削減額の「実際」の側に足す。
+        if (r.isAnswered) {
+          const apply = (t: Totals) => recordClassifier(t, r.usage)
+          await addToTotal($, bump(apply), apply)
+        }
         // 答えが返らなかった（API エラーなど）ときと、ラベルが見つからないときは、どちらも null（切り替えない）。
         const label = r.isAnswered ? parseLabel(r.text) : undefined
         pick = label === undefined ? null : (ROUTES[label] ?? null)
@@ -197,8 +261,15 @@ export const register: Register = on => {
 
   // 2. モデルへのリクエストを送る直前に、毎回呼ばれる（1 ターンに何度か呼ばれることがある）。
   // effort の書き換えは次のステップに引き継がれないので、毎回指定する。
+  // 応答の usage は、削減額の記録に使う（メインのリクエストだけ。subagent はどちらの方式でも同じなので数えない）。
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId || !pick) return yield* next(e) // subagent の手前は触らない
-    return yield* next({ ...e, model: pick.model, effort: pick.effort })
+    if (e.agentId) return yield* next(e) // subagent の手前は触らない
+    const r = yield* next(pick ? { ...e, model: pick.model, effort: pick.effort } : e)
+    const usage = r.usage
+    if (usage) {
+      const apply = (t: Totals) => recordStep(t, usage.model, usage)
+      await addToTotal($, bump(apply), apply)
+    }
+    return r
   })
 }

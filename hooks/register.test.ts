@@ -6,11 +6,12 @@
 // セッションのモデルは、すべてのテストで sonnet / high とする（step の入力と同じ値）。
 // そのため、model が 'sonnet' のままなら「切り替えなかった」、別のモデルなら「切り替えた」と読める。
 //
-// テストは次の 4 つに分かれている。
+// テストは次の 5 つに分かれている。
 //   1. 振り分けの基本（ラベル → モデルと effort）
 //   2. 名乗りの添え書き
 //   3. Haiku に渡すもの（判断基準と、直前の会話）
 //   4. Haiku の返事が使えないとき
+//   5. 削減額の記録と /savings
 import { expect, test } from 'claude-code/testing'
 
 type Msg = { role: 'user' | 'assistant'; text: string }
@@ -36,15 +37,28 @@ const LABELS = [
  *   - request: Haiku を呼んだときの引数（model、system、prompt など）
  *   - context: prompt.submit が足した添え書き
  */
-function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () => []) {
-  const seen = { model: '', effort: undefined as unknown, classified: 0, context: [] as readonly string[], request: undefined as any }
+function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () => [], stepUsage: () => unknown = () => null) {
+  const seen = {
+    model: '', effort: undefined as unknown, classified: 0, context: [] as readonly string[], request: undefined as any,
+    store: {} as Record<string, unknown>, saves: 0,
+  }
+  // $.store の差し替え。テストごとに空の保存先から始まる（seen.store に事前に値を入れれば、それを読む）。
+  on('store.get', (_: unknown, e: { key: string }) => ({ value: seen.store[e.key] }))
+  on('store.set', (_: unknown, e: { key: string; value: unknown }) => {
+    seen.store[e.key] = e.value
+    seen.saves++
+    return { value: undefined }
+  })
+  // /savings の登録とセッションの開始の差し替え（runSavings が使う）。
+  on('command.register', () => ({ value: { command: 'savings' } }))
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   // $.model.complete の差し替え。Haiku の代わりに reply() の内容を返す。
   on('model.complete', (_: unknown, e: any) => {
     seen.classified++
     seen.request = e
     const r = reply()
     if (r instanceof Error) throw r
-    const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    const usage = { input_tokens: 100, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
     if (typeof r !== 'string') return { value: { isAnswered: false, reason: 'api-error', status: 500, error: 'api_error', usage } }
     return { value: { isAnswered: true, text: r, usage } }
   })
@@ -63,7 +77,7 @@ function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () =
   on('turn.step', async function* (_: unknown, e: { turnId: string; index: number; model: string; effort?: unknown }) {
     seen.model = e.model
     seen.effort = e.effort
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: stepUsage() }
   })
   return seen
 }
@@ -296,4 +310,78 @@ test('a failed messages read still classifies the request', async ($, on) => {
   await step($)
   expect(seen.classified).toBe(1)
   expect(seen.model).toBe('opus')
+})
+
+// ---- 5. 削減額の記録と /savings ----
+// メインのリクエストの usage と、分類の Haiku の usage を、$.store の 'savings-totals' に累計する。
+
+const USAGE = { model: 'claude-sonnet-5-5', input_tokens: 1000, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+const totals = (seen: { store: Record<string, unknown> }) => seen.store['savings-totals'] as any
+
+// メインのリクエストの usage が、応答したモデル（sonnet）の分として保存される。
+test('a main step is recorded and saved', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  await step($)
+  expect(totals(seen).actual.sonnet.input).toBe(1000)
+  expect(totals(seen).requests).toBe(1)
+})
+
+// subagent のリクエストは、どちらの方式でも同じなので数えない。
+test('a subagent step is not recorded', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  await step($, 'agent-1')
+  expect(seen.saves).toBe(0)
+})
+
+// usage がない結果（中断や API エラー）は、何も足さない。
+test('a step without usage records nothing', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question')
+  await step($)
+  expect(seen.saves).toBe(0)
+})
+
+// 分類の Haiku の usage（差し替えでは入力 100）は、分類の分として保存される。
+test('classifier usage is recorded', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question')
+  await $.prompt.submit({ text: 'こんにちは' })
+  expect(totals(seen).classifier.input).toBe(100)
+})
+
+// モデルを明示したターンは Haiku を呼ばないので、分類の分は増えない。
+test('explicit model adds no classifier usage', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  await $.prompt.submit({ text: 'Fable で、構成案を考えて' })
+  await step($)
+  expect(totals(seen).classifier.input).toBe(0)
+})
+
+// 保存先に形の違う値があっても、空の累計から数え直す。
+test('unreadable store starts from zero', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  seen.store['savings-totals'] = { actual: 1 }
+  await step($)
+  expect(totals(seen).requests).toBe(1)
+})
+
+/** セッションを始めて /savings を登録し、実行して、返った文章を返す（差し替えは setup にある）。 */
+async function runSavings($: any, args: string): Promise<string> {
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.command.run({ command: 'savings', args })
+  return r.text ?? ''
+}
+
+// 引数を省略すると、Opus を基準にした文章が返る。推定の注意も入る。
+test('savings command reports against opus by default', async ($, on) => {
+  setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  await step($)
+  const text = await runSavings($, '')
+  expect(text).toContain('Opus')
+  expect(text).toContain('effort の差は含まない')
+})
+
+// 引数で基準のモデルを変えられる。
+test('savings command takes a baseline', async ($, on) => {
+  setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  await step($)
+  expect(await runSavings($, 'sonnet')).toContain('基準 Sonnet')
 })
