@@ -40,8 +40,11 @@ const LABELS = [
 function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () => [], stepUsage: () => unknown = () => null) {
   const seen = {
     model: '', effort: undefined as unknown, classified: 0, context: [] as readonly string[], request: undefined as any,
-    store: {} as Record<string, unknown>, saves: 0,
+    store: {} as Record<string, unknown>, saves: 0, commandName: 'savings',
   }
+  // このセッションの ID の差し替え。削減額は、セッションごとのキー savings:S1 に保存される。
+  on('session.id', () => ({ value: 'S1' }))
+  on('store.keys', () => ({ value: Object.keys(seen.store) }))
   // $.store の差し替え。テストごとに空の保存先から始まる（seen.store に事前に値を入れれば、それを読む）。
   on('store.get', (_: unknown, e: { key: string }) => ({ value: seen.store[e.key] }))
   on('store.set', (_: unknown, e: { key: string; value: unknown }) => {
@@ -50,7 +53,7 @@ function setup(on: any, reply: () => Reply, messages: () => Msg[] | Error = () =
     return { value: undefined }
   })
   // /savings の登録とセッションの開始の差し替え（runSavings が使う）。
-  on('command.register', () => ({ value: { command: 'savings' } }))
+  on('command.register', () => ({ value: { command: seen.commandName } }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   // $.model.complete の差し替え。Haiku の代わりに reply() の内容を返す。
   on('model.complete', (_: unknown, e: any) => {
@@ -313,10 +316,11 @@ test('a failed messages read still classifies the request', async ($, on) => {
 })
 
 // ---- 5. 削減額の記録と /savings ----
-// メインのリクエストの usage と、分類の Haiku の usage を、$.store の 'savings-totals' に累計する。
+// メインのリクエストの usage と、分類の Haiku の usage を、$.store のセッションごとのキー（savings:<セッション ID>）に保存する。
+// 累計は、表示のときに savings: で始まるキーをすべて足し合わせる。
 
 const USAGE = { model: 'claude-sonnet-5-5', input_tokens: 1000, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
-const totals = (seen: { store: Record<string, unknown> }) => seen.store['savings-totals'] as any
+const totals = (seen: { store: Record<string, unknown> }) => seen.store['savings:S1'] as any
 
 // メインのリクエストの usage が、応答したモデル（sonnet）の分として保存される。
 test('a main step is recorded and saved', async ($, on) => {
@@ -358,15 +362,15 @@ test('explicit model adds no classifier usage', async ($, on) => {
 // 保存先に形の違う値があっても、空の累計から数え直す。
 test('unreadable store starts from zero', async ($, on) => {
   const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
-  seen.store['savings-totals'] = { actual: 1 }
+  seen.store['savings:S1'] = { actual: 1 }
   await step($)
   expect(totals(seen).requests).toBe(1)
 })
 
 /** セッションを始めて /savings を登録し、実行して、返った文章を返す（差し替えは setup にある）。 */
-async function runSavings($: any, args: string): Promise<string> {
+async function runSavings($: any, args: string, command = 'savings'): Promise<string> {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const r = await $.command.run({ command: 'savings', args })
+  const r = await $.command.run({ command, args })
   return r.text ?? ''
 }
 
@@ -384,4 +388,46 @@ test('savings command takes a baseline', async ($, on) => {
   setup(on, () => 'chat-or-question', () => [], () => USAGE)
   await step($)
   expect(await runSavings($, 'sonnet')).toContain('基準 Sonnet')
+})
+
+// 分類の API が「答えなし」でも、課金された usage があれば分類の分に足す（捨てると削減額が過大になる）。
+test('unanswered classification usage is still recorded', async ($, on) => {
+  const seen = setup(on, () => ({ isAnswered: false }))
+  await $.prompt.submit({ text: '何か実装して' })
+  expect(totals(seen).classifier.input).toBe(100)
+})
+
+// 前のセッション（savings:OLD）の最後のモデルと比べて、新しいセッションの最初のリクエストを切り替えと数えない。
+test('a new session does not count the previous session as a switch', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => ({ ...USAGE, cache_creation_input_tokens: 1000 }))
+  seen.store['savings:OLD'] = {
+    actual: {}, baseline: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    classifier: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    requests: 0, unpriced: 0, prevModel: 'claude-opus-5-5', prevPrompt: 5000,
+  }
+  await step($)
+  expect(totals(seen).baseline.cacheRead).toBe(0)
+  expect(totals(seen).baseline.cacheWrite).toBe(1000)
+})
+
+// エンジンがプラグイン名で区切った名前（model-router:savings）を返しても、その名前で実行できる。
+test('savings command works with a qualified name', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  seen.commandName = 'model-router:savings'
+  await step($)
+  expect(await runSavings($, '', 'model-router:savings')).toContain('基準 Opus')
+})
+
+// 累計は、ほかのセッションの記録も足し合わせる（このセッション 1 回 + 前のセッション 3 回 = 4 回）。
+test('savings command sums all sessions', async ($, on) => {
+  const seen = setup(on, () => 'chat-or-question', () => [], () => USAGE)
+  seen.store['savings:OLD'] = {
+    actual: { sonnet: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } },
+    baseline: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+    classifier: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, requests: 3, unpriced: 0,
+  }
+  await step($)
+  const text = await runSavings($, '')
+  expect(text).toContain('リクエスト 1 回')
+  expect(text).toContain('リクエスト 4 回')
 })

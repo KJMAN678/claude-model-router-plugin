@@ -1,6 +1,6 @@
 // hooks/savings.ts（削減額の計算）のテスト。$ と on は使わず、関数だけを確かめる。
 import { expect, test } from 'claude-code/testing'
-import { cost, emptyTotals, parseTotals, recordClassifier, recordStep, report } from './savings'
+import { baselineFamily, cost, emptyTotals, parseTotals, recordClassifier, recordStep, report, sumTotals } from './savings'
 
 const U = (i: number, o: number, r: number, w: number) =>
   ({ input_tokens: i, output_tokens: o, cache_read_input_tokens: r, cache_creation_input_tokens: w })
@@ -61,4 +61,29 @@ test('report names baseline, saving and caveats', () => {
 test('parseTotals rejects a wrong shape', () => {
   expect(parseTotals({ actual: 1 })).toEqual(emptyTotals())
   expect(parseTotals(undefined)).toEqual(emptyTotals())
+})
+
+// 旧版のモデル（Opus 5、Haiku 4.5 など）は単価が違うので、計算から外す。現行の単価で数えると、削減額が過大になる。
+test('an older model of the same family is unpriced', () => {
+  let t = recordStep(emptyTotals(), 'claude-opus-5', U(10, 5, 0, 0))
+  t = recordStep(t, 'claude-haiku-4-5', U(10, 5, 0, 0))
+  expect(t.unpriced).toBe(2)
+  expect(t.actual).toEqual({})
+})
+
+// /savings の引数（基準）は、短い名前だけを受け付ける。
+test('baselineFamily accepts short names only', () => {
+  expect(baselineFamily('Sonnet')).toBe('sonnet')
+  expect(baselineFamily('gpt')).toBeUndefined()
+})
+
+// セッションごとの記録を足し合わせて、累計にする。
+test('sumTotals adds sessions', () => {
+  const a = recordStep(emptyTotals(), 'claude-opus-5-5', U(10, 5, 0, 0))
+  const b = recordClassifier(recordStep(emptyTotals(), 'claude-opus-5-5', U(1, 1, 0, 0)), U(3, 0, 0, 0))
+  const t = sumTotals([a, b])
+  expect(t.requests).toBe(2)
+  expect(t.actual.opus.input).toBe(11)
+  expect(t.classifier.input).toBe(3)
+  expect(t.baseline.input).toBe(11)
 })

@@ -9,34 +9,38 @@
 //
 // 分類に失敗したときや、雑談のときは pick が null になり、何も書き換えない（セッションのモデルのまま）。
 import type { EngineInterface, Register } from 'claude-code'
-import { emptyTotals, family, parseTotals, recordClassifier, recordStep, report, type Totals } from './savings'
+import { baselineFamily, emptyTotals, parseTotals, recordClassifier, recordStep, report, sumTotals, type Totals } from './savings'
 
-// 削減額の累計を保存する $.store のキー。セッションをまたいで残る。
-const TOTALS_KEY = 'savings-totals'
+// 削減額は、セッションごとに $.store のキー savings:<セッション ID> に保存する（セッションをまたいで残る）。
+// 1 つのキーを全セッションで書き換えると、同時に使ったときに加算が消えるため。累計は、表示のときに足し合わせる。
+// ponytail: セッションの数だけキーが増える（1 件数百バイト。$.store の上限 4 MiB に近づいたら、古いものをまとめる）。
+const KEY_PREFIX = 'savings:'
 
 /**
- * 利用量を 1 件、$.store の累計に足して保存する。保存に失敗しても、切り替えは止めない。
+ * 利用量を 1 件、このセッションの記録に足して保存する。保存に失敗しても、切り替えは止めない。
  * （$ を受け取る関数は、エンジンの決まりでファイルの一番上に置く。）
+ * 記録は $.store から読み直すので、mod を再読み込みしても、このセッションの分と直前のリクエストが残る。
  *
- * @param prev このセッションの直前のリクエスト。累計の比較にはこちらを使い、
- *             前のセッションの最後のモデルと比べて、切り替えたと誤って数えないようにする。
  * @param apply 足し込む関数（recordStep か recordClassifier）。
  */
-async function addToTotal($: EngineInterface, prev: Pick<Totals, 'prevModel' | 'prevPrompt'>, apply: (t: Totals) => Totals) {
+async function record($: EngineInterface, apply: (t: Totals) => Totals) {
   try {
-    const total = parseTotals(await $.store.get(TOTALS_KEY))
-    await $.store.set(TOTALS_KEY, apply({ ...total, ...prev }))
+    const key = KEY_PREFIX + (await $.session.id())
+    await $.store.set(key, apply(parseTotals(await $.store.get(key))))
   } catch {
-    // 保存できなくても、このセッションの分は残る。
+    // 保存できなくても、切り替えは続ける。
   }
 }
 
-/** $.store の累計を読む。読めなければ空の累計。 */
-async function readTotal($: EngineInterface): Promise<Totals> {
+/** このセッションの記録と、すべてのセッションの累計を読む。読めなければ空。 */
+async function readTotals($: EngineInterface): Promise<{ session: Totals; total: Totals }> {
   try {
-    return parseTotals(await $.store.get(TOTALS_KEY))
+    const own = KEY_PREFIX + (await $.session.id())
+    const keys = (await $.store.keys()).filter(k => k.startsWith(KEY_PREFIX))
+    const all = await Promise.all(keys.map(async k => [k, parseTotals(await $.store.get(k))] as const))
+    return { session: all.find(([k]) => k === own)?.[1] ?? emptyTotals(), total: sumTotals(all.map(([, t]) => t)) }
   } catch {
-    return emptyTotals()
+    return { session: emptyTotals(), total: emptyTotals() }
   }
 }
 
@@ -183,16 +187,6 @@ export const register: Register = on => {
   // ponytail: モジュール変数なので、mod の再読み込みで消える。ターンの途中で再読み込みすると、そのターンの残りは切り替わらない。
   let pick: Route | null = null
   let hasNoted = false
-  // このセッションの削減額の記録。累計は $.store にある。
-  // ponytail: モジュール変数なので、mod の再読み込みで 0 に戻る（累計は残る）。
-  let session: Totals = emptyTotals()
-
-  // 利用量をこのセッションの分に足し、足す前の「直前のリクエスト」を返す（累計の比較に使う）。
-  const bump = (apply: (t: Totals) => Totals) => {
-    const prev = { prevModel: session.prevModel, prevPrompt: session.prevPrompt }
-    session = apply(session)
-    return prev
-  }
 
   // /savings を登録する。名前はエンジンが返したもの（プラグイン名で区切られることがある）を使う。
   let savingsCommand = 'savings'
@@ -209,8 +203,9 @@ export const register: Register = on => {
   // /savings [基準のモデル]: このセッションと累計の削減額を表示する。
   on('command.run', async ($, e, next) => {
     if (e.command !== savingsCommand) return next(e)
-    const baseline = family(e.args.trim()) ?? 'opus'
-    return { text: report(session, await readTotal($), baseline) }
+    const baseline = baselineFamily(e.args) ?? 'opus'
+    const { session, total } = await readTotals($)
+    return { text: report(session, total, baseline) }
   })
 
   // 1. プロンプトを送った直後（モデルを呼ぶ前）に呼ばれる。ここで行き先を決める。
@@ -238,11 +233,8 @@ export const register: Register = on => {
           effort: 'low',
           timeoutMs: 10000,
         })
-        // 分類の費用を、削減額の「実際」の側に足す。
-        if (r.isAnswered) {
-          const apply = (t: Totals) => recordClassifier(t, r.usage)
-          await addToTotal($, bump(apply), apply)
-        }
+        // 分類の費用を、削減額の「実際」の側に足す。答えがなくても課金された分（本文が空の返事など）は数える。
+        if (r.usage) await record($, t => recordClassifier(t, r.usage))
         // 答えが返らなかった（API エラーなど）ときと、ラベルが見つからないときは、どちらも null（切り替えない）。
         const label = r.isAnswered ? parseLabel(r.text) : undefined
         pick = label === undefined ? null : (ROUTES[label] ?? null)
@@ -266,10 +258,7 @@ export const register: Register = on => {
     if (e.agentId) return yield* next(e) // subagent の手前は触らない
     const r = yield* next(pick ? { ...e, model: pick.model, effort: pick.effort } : e)
     const usage = r.usage
-    if (usage) {
-      const apply = (t: Totals) => recordStep(t, usage.model, usage)
-      await addToTotal($, bump(apply), apply)
-    }
+    if (usage) await record($, t => recordStep(t, usage.model, usage))
     return r
   })
 }

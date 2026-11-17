@@ -28,6 +28,13 @@ const PRICES: Record<string, Tokens> = {
   haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2 },
 }
 const NAMES: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', fable: 'Fable', haiku: 'Haiku' }
+// 単価表の対象のモデル ID。旧版（claude-opus-5、claude-haiku-4-5 など）は単価が違うので、前方一致で現行の版だけを拾う。
+const MODEL_IDS: Record<string, string> = {
+  'claude-opus-5-5': 'opus',
+  'claude-sonnet-5-5': 'sonnet',
+  'claude-fable-5-2': 'fable',
+  'claude-haiku-5-5': 'haiku',
+}
 
 const zero = (): Tokens => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
 const add = (a: Tokens, b: Tokens): Tokens => ({
@@ -48,10 +55,31 @@ export function emptyTotals(): Totals {
   return { actual: {}, baseline: zero(), classifier: zero(), requests: 0, unpriced: 0 }
 }
 
-/** モデル ID（`claude-opus-5-5` など）から、単価表のモデルの種類を返す。表にないモデルは undefined。 */
+/** 応答したモデルの ID（`claude-opus-5-5` など）から、単価表のモデルの種類を返す。表にない版は undefined。 */
 export function family(modelId: string): string | undefined {
   const id = modelId.toLowerCase()
-  return Object.keys(PRICES).find(f => id.includes(f))
+  return Object.entries(MODEL_IDS).find(([prefix]) => id.startsWith(prefix))?.[1]
+}
+
+/** `/savings` の引数（`opus` など、短い名前）を、単価表のモデルの種類にする。知らない名前は undefined。 */
+export function baselineFamily(name: string): string | undefined {
+  const n = name.trim().toLowerCase()
+  return n in PRICES ? n : undefined
+}
+
+/** セッションごとの記録を足し合わせて、累計にする。 */
+export function sumTotals(list: readonly Totals[]): Totals {
+  return list.reduce((sum, t) => {
+    const actual = { ...sum.actual }
+    for (const [f, tok] of Object.entries(t.actual)) actual[f] = add(actual[f] ?? zero(), tok)
+    return {
+      actual,
+      baseline: add(sum.baseline, t.baseline),
+      classifier: add(sum.classifier, t.classifier),
+      requests: sum.requests + t.requests,
+      unpriced: sum.unpriced + t.unpriced,
+    }
+  }, emptyTotals())
 }
 
 /**
