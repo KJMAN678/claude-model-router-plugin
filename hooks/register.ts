@@ -7,26 +7,29 @@
 //        ・ラベルを ROUTES で引いて、モデルと effort にする
 //   2. turn.step: モデルへのリクエストを送る直前に、pick の値で model と effort を書き換える
 //
-// 分類に失敗したときや、雑談のときは pick が null になり、何も書き換えない（セッションのモデルのまま）。
+// 分類に失敗したとき（ラベルが読めない、API が答えない）は pick が null になり、何も書き換えない（セッションのモデルのまま）。
 import type { Register } from 'claude-code'
 
 // 切り替え先。model は 'opus' のような短い名前、effort はそのターンの考える深さ。
 type Route = { model: string; effort: 'medium' | 'high' | 'xhigh' }
 
-// 分類ラベル → モデルと effort。docs/superpowers/specs の 5.1 の表と同じ。null は切り替えない（セッションのモデルのまま）。
+// 分類ラベル → モデルと effort。docs/superpowers/specs の 4.1 の表と同じ。
+// 基準は https://claude.dev/blog/which-claude-model-should-you-build-with/ に沿う:
+// 既定は Opus（medium〜high）、仕様が明確な作業は Sonnet、最も難しい作業だけ Fable。Opus を high より上げる前に Fable を使う。
 // ラベルを足すときは、下の CRITERIA にも、そのラベルの判断基準を 1 行足す（Haiku が選べるようにするため）。
-// Fable は、ここには入れない。プロンプトに「Fable で」と書いたとき（下の EXPLICIT）だけ使う。
+// Fable は、最難関の 2 つ（design-hardest、implement-complex）と、プロンプトに「Fable で」と書いたとき（下の EXPLICIT）に使う。
 const ROUTES: Record<string, Route | null> = {
   'design-simple': { model: 'opus', effort: 'medium' },
   'design-moderate': { model: 'opus', effort: 'high' },
   'design-complex': { model: 'opus', effort: 'high' },
-  'design-hardest': { model: 'opus', effort: 'xhigh' },
+  'design-hardest': { model: 'fable', effort: 'high' },
   'implement-simple': { model: 'sonnet', effort: 'high' },
   'implement-moderate': { model: 'opus', effort: 'high' },
-  'implement-complex': { model: 'opus', effort: 'xhigh' },
-  'review-standard': { model: 'opus', effort: 'xhigh' },
-  'review-deep': { model: 'opus', effort: 'xhigh' },
-  'chat-or-question': null,
+  'implement-complex': { model: 'fable', effort: 'medium' },
+  'migration-or-optimization': { model: 'opus', effort: 'high' },
+  'review-standard': { model: 'opus', effort: 'high' },
+  'review-deep': { model: 'opus', effort: 'high' },
+  'chat-or-question': { model: 'sonnet', effort: 'medium' },
 }
 // Haiku に選ばせるラベルの一覧（ROUTES のキー）。返事の照合にも使う。
 const LABELS = Object.keys(ROUTES)
@@ -46,7 +49,8 @@ design-complex: 新しい機能やモジュール全体の設計、外部の調�
 design-hardest: アーキテクチャ全体の見直し、正解の見えない難しい問題
 implement-simple: 1 ファイル程度の小さな修正、名前の変更、定型の作業
 implement-moderate: 複数ファイルの変更、テストを伴う機能の追加
-implement-complex: 大きなリファクタリング、込み入ったバグの調査と修正
+implement-complex: 大規模なリファクタリングや大規模な移行、込み入ったバグの調査と修正
+migration-or-optimization: 仕様は明確でも難しい、フレームワークや言語の移行、性能の最適化
 review-standard: 差分や PR のレビュー
 review-deep: 設計全体やセキュリティまで見る深いレビュー
 chat-or-question: 雑談、あいさつ、すぐ答えられる質問

@@ -42,14 +42,15 @@ model-router/                      # リポジトリのルート = プラグイ�
 
 | ラベル | モデル / effort |
 |--|--|
-| design-simple / moderate / complex / hardest | opus / medium、opus / high、opus / high、opus / xhigh |
-| implement-simple / moderate / complex | sonnet / high、opus / high、opus / xhigh |
-| review-standard / deep | opus / xhigh、opus / xhigh |
-| chat-or-question | 切り替えない（セッションのモデルのまま） |
+| design-simple / moderate / complex / hardest | opus / medium、opus / high、opus / high、fable / high |
+| implement-simple / moderate / complex | sonnet / high、opus / high、fable / medium |
+| migration-or-optimization | opus / high |
+| review-standard / deep | opus / high、opus / high |
+| chat-or-question | sonnet / medium |
 
-intent.md との対応: 設計・調査のシンプル = Opus medium〜high、複雑 = Opus high〜xhigh。実装のシンプル = Sonnet high、複雑 = Opus high〜xhigh。レビュー = Opus の xhigh。
+intent.md との対応: 設計・調査のシンプル = Opus medium〜high、最難関 = Fable high。実装のシンプル = Sonnet high、最難関 = Fable medium。レビュー = Opus high。
 
-**Fable は、プロンプトに「Fable で」と書いたとき（4.2 の 2）だけ使う**（2026-11-15 に変更）。intent.md で Fable としていた複雑な設計と深いレビューは、effort を変えずに Opus に替えた。
+**2026-11-23（0.4.0）に、claude.dev の記事「Which Claude model should you build with?」（2026-11-09）に合わせて見直した。** 既定は Opus、仕様が明確な作業は Sonnet、最も難しい作業は Fable（Opus は high より上げず、先に Fable を使う）。Fable は、最難関の design-hardest と implement-complex、およびプロンプトに「Fable で」と書いたとき（4.2 の 2）に使う（2026-11-15 に Fable を明示のみにしたのを、一部戻した）。xhigh は使わない（記事では high の 2.5 倍の費用で +1.4 点）。移行・性能最適化は、仕様が明確でも難しいので migration-or-optimization を足した（大規模なものは implement-complex）。雑談は Sonnet medium にした。
 
 各ラベルの判断基準は `register.ts` の `CRITERIA` に文章で書き、Haiku にシステムプロンプトとして渡す。0.2.x までは `$.model.classify` を使っており、基準の文章を渡せなかった。
 
@@ -86,7 +87,7 @@ intent.md との対応: 設計・調査のシンプル = Opus medium〜high、�
 - `python3 -m unittest discover tests`: manifest、marketplace、`hooks.json` が mod のモジュールだけを読むこと。
 - `claude plugin test .`（2.1.321 以上。2.1.261 にはない）: Haiku の返事と会話を差し替えて確かめる。主なケース:
   - 分類によるモデルと effort の切り替え
-  - 雑談は切り替えない
+  - 雑談は sonnet / medium に切り替える（0.4.0）
   - 短い続きは、直前の会話とともに分類に渡す
   - Haiku に渡す会話は、本文のある最後の 4 件、各 500 文字まで。添え書きと、今回のプロンプトの重複は除く
   - 返事の前後に余計な文字があってもラベルを拾い、ラベルがない返事や応答のない呼び出しでは切り替えない
