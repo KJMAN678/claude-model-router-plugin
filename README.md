@@ -50,3 +50,8 @@ claude plugin test .
 ```
 
 `claude plugin test` は、新しい Claude Code（2.1.321 で確認、2.1.261 にはありません）が必要です。API は呼びません（分類結果は、テストの中で差し替えています）。実機の確認は、プラグインを入れたセッションにプロンプトを送り、セッション記録の `requestedModel` と `effort` を見てください。
+
+## 参照
+
+- [Which Claude model should you build with? Fable, Opus, Sonnet, or Haiku](https://claude.dev/blog/which-claude-model-should-you-build-with/)
+- [週間制限に3日で到達していたClaudeが、ModelとEffortの使い分けで5日持つようになった話](https://zenn.dev/sun_asterisk/articles/1d1c65b1fe409a)
