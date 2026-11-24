@@ -9,6 +9,7 @@
 //
 // 分類に失敗したとき（ラベルが読めない、API が答えない）は pick が null になり、何も書き換えない（セッションのモデルのまま）。
 import type { Register } from 'claude-code'
+import { emptyLedger, record, recordClassify, report, type Ledger } from './savings'
 
 // 切り替え先。model は 'opus' のような短い名前、effort はそのターンの考える深さ。
 type Route = { model: string; effort: 'medium' | 'high' | 'xhigh' }
@@ -114,6 +115,10 @@ function parseLabel(reply: string): string | undefined {
   return LABELS.find(l => text.includes(l))
 }
 
+// 削減額の累計を入れる $.store のキーと、確認用のスラッシュコマンド名（名前に ':' は使えない）。
+const SAVINGS_KEY = 'savings'
+const SAVINGS_COMMAND = 'model-router-savings'
+
 // 画面や添え書きに出す、モデルの表示名。
 const NAMES: Record<string, string> = { opus: 'Opus', fable: 'Fable', sonnet: 'Sonnet' }
 
@@ -141,6 +146,17 @@ function identityNote(pick: Route | null, hasNoted: boolean): string | undefined
   return undefined
 }
 
+// セッションの帳簿と、$.store の累計の帳簿の両方に、同じ記録を足す。記録の失敗で、切り替えは止めない。
+// ponytail: 累計は読んで足して書く。同時に動く複数のセッションが重なると、片方の分が消える。
+async function track($: { store: { get(k: string): Promise<unknown>; set(k: string, v: unknown): Promise<void> } }, session: Ledger, add: (l: Ledger) => void): Promise<void> {
+  try {
+    add(session)
+    const total = (await $.store.get(SAVINGS_KEY) as Ledger | undefined) ?? emptyLedger()
+    add(total)
+    await $.store.set(SAVINGS_KEY, total)
+  } catch { /* 記録できなくても続ける */ }
+}
+
 /**
  * mod の入口。Claude Code が mod を読み込むときに 1 度だけ呼び、2 つのフックを登録する。
  *   - `prompt.submit`: プロンプトを分類して pick を決め、ステータス行と名乗りの添え書きを出す
@@ -157,6 +173,21 @@ export const register: Register = on => {
   // ponytail: モジュール変数なので、mod の再読み込みで消える。ターンの途中で再読み込みすると、そのターンの残りは切り替わらない。
   let pick: Route | null = null
   let hasNoted = false
+
+  // 削減額の記録（savings.ts）。session はこのセッションの分（再読み込みで消える）、累計は $.store の SAVINGS_KEY。
+  // prev は前のメインのリクエストのモデルとプロンプト全体で、モデルが変わったときのキャッシュの補正に使う。
+  const session = emptyLedger()
+  let prev: { model: string; total: number } | undefined
+
+  // 削減額を見るスラッシュコマンドを登録する。
+  on('session.start', async ($, e, next) => {
+    await $.command.register({ name: SAVINGS_COMMAND, description: '基準のモデルだけで動かした場合との料金の差を表示する', argumentHint: '[opus|sonnet|fable|haiku]' })
+    return next(e)
+  })
+  on('command.run', { command: SAVINGS_COMMAND }, async ($, e) => {
+    const total = (await $.store.get(SAVINGS_KEY) as Ledger | undefined) ?? emptyLedger()
+    return { text: report(e.args, session, total) }
+  })
 
   // 1. プロンプトを送った直後（モデルを呼ぶ前）に呼ばれる。ここで行き先を決める。
   on('prompt.submit', async ($, e, next) => {
@@ -183,6 +214,7 @@ export const register: Register = on => {
           effort: 'low',
           timeoutMs: 10000,
         })
+        if (r.usage) await track($, session, l => recordClassify(l, r.usage))
         // 答えが返らなかった（API エラーなど）ときと、ラベルが見つからないときは、どちらも null（切り替えない）。
         const label = r.isAnswered ? parseLabel(r.text) : undefined
         pick = label === undefined ? null : (ROUTES[label] ?? null)
@@ -202,7 +234,14 @@ export const register: Register = on => {
   // 2. モデルへのリクエストを送る直前に、毎回呼ばれる（1 ターンに何度か呼ばれることがある）。
   // effort の書き換えは次のステップに引き継がれないので、毎回指定する。
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId || !pick) return yield* next(e) // subagent の手前は触らない
-    return yield* next({ ...e, model: pick.model, effort: pick.effort })
+    if (e.agentId) return yield* next(e) // subagent の手前は触らない（削減額も数えない。どちらの方式でも同じなので）
+    const r = yield* next(pick ? { ...e, model: pick.model, effort: pick.effort } : e)
+    const u = r.usage
+    if (u) {
+      const before = prev
+      prev = { model: u.model, total: u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens }
+      await track($, session, l => record(l, u, before))
+    }
+    return r
   })
 }

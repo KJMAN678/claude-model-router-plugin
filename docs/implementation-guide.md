@@ -255,7 +255,7 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 | 種類 | 実行 | 内容 |
 |--|--|--|
 | 静的な確認 | `python3 -m unittest discover tests` | plugin.json と marketplace.json の整合、`hooks.json` が mod だけを読むこと、`register.ts` が 2 つのフックを持つこと |
-| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 19 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
+| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、`register.test.ts` の 19 ケースと、`savings.test.ts` の 8 ケース（削減額の記録と表示）を確かめる。API は呼ばない。2.1.321 以上が必要 |
 | 検証 | `claude plugin validate .` | `prompt.submit` と `turn.step` を hook し、`$.model.complete`、`$.session.messages`、`$.ui.status` を呼ぶことの確認 |
 
 `claude plugin test` の 19 ケース（`hooks/register.test.ts`）:
