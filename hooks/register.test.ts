@@ -4,7 +4,7 @@
 //   ・Haiku の返事（reply）と、それまでの会話（messages）
 //   ・モデルへのリクエスト（turn.step）。ここに渡った model と effort を記録して、書き換えを確かめる
 // セッションのモデルは、すべてのテストで sonnet / high とする（step の入力と同じ値）。
-// そのため、model が 'sonnet' のままなら「切り替えなかった」、別のモデルなら「切り替えた」と読める。
+// sonnet に切り替えるラベルもあるので、「切り替えなかった」ことは model でなく、添え書き（context）が空かどうかで見る。
 //
 // テストは次の 4 つに分かれている。
 //   1. 振り分けの基本（ラベル → モデルと effort）
@@ -20,7 +20,7 @@ type Reply = string | Error | { isAnswered: false }
 // register.ts の ROUTES のラベルと同じ。判断基準（CRITERIA）にすべて入っているかを確かめるのに使う。
 const LABELS = [
   'design-simple', 'design-moderate', 'design-complex', 'design-hardest',
-  'implement-simple', 'implement-moderate', 'implement-complex',
+  'implement-simple', 'implement-moderate', 'implement-complex', 'migration-or-optimization',
   'review-standard', 'review-deep', 'chat-or-question',
 ]
 
@@ -82,33 +82,43 @@ async function step($: any, agentId?: string) {
 
 // ---- 1. 振り分けの基本（ラベル → モデルと effort） ----
 
-// 重いレビューのラベル（review-deep）なら、opus / xhigh に切り替わる。
-test('a review prompt switches the main model to opus xhigh', async ($, on) => {
+// 重いレビューのラベル（review-deep）なら、opus / high に切り替わる（Opus を high より上げる前に Fable、という基準）。
+test('a review prompt switches the main model to opus high', async ($, on) => {
   const seen = setup(on, () => 'review-deep')
   await $.prompt.submit({ text: 'この変更をレビューして' })
   await step($)
   expect(seen.model).toBe('opus')
-  expect(seen.effort).toBe('xhigh')
+  expect(seen.effort).toBe('high')
 })
 
-// Fable は、プロンプトに「Fable で」と書いたときだけ使う。分類の結果（どのラベル）では、fable にならない。
-test('no classification label routes to fable', async ($, on) => {
+// Fable を使うのは、最難関の 2 つのラベル（design-hardest と implement-complex）だけ。ほかのラベルは fable にならない。
+test('only the two hardest labels route to fable', async ($, on) => {
   let label = 'chat-or-question'
   const seen = setup(on, () => label)
   for (const l of LABELS) {
     label = l
     await $.prompt.submit({ text: '何かして' })
     await step($)
-    expect(seen.model).not.toBe('fable')
+    const isHardest = l === 'design-hardest' || l === 'implement-complex'
+    expect(seen.model === 'fable').toBe(isHardest)
   }
 })
 
-// 雑談のラベル（chat-or-question）なら切り替えず、セッションの sonnet / high のまま。
-test('a chat prompt keeps the session model', async ($, on) => {
+// 雑談のラベル（chat-or-question）は、sonnet / medium にする（セッションの sonnet / high から effort が変わる）。
+test('a chat prompt switches to sonnet medium', async ($, on) => {
   const seen = setup(on, () => 'chat-or-question')
   await $.prompt.submit({ text: 'こんにちは' })
   await step($)
   expect(seen.model).toBe('sonnet')
+  expect(seen.effort).toBe('medium')
+})
+
+// 移行・性能最適化のラベル（migration-or-optimization）は、仕様が明確でも opus / high にする。
+test('a migration prompt switches to opus high', async ($, on) => {
+  const seen = setup(on, () => 'migration-or-optimization')
+  await $.prompt.submit({ text: 'Jest から Vitest に移行して' })
+  await step($)
+  expect(seen.model).toBe('opus')
   expect(seen.effort).toBe('high')
 })
 
@@ -144,18 +154,18 @@ test('a switched turn tells the model which model answers', async ($, on) => {
 })
 
 // 添え書きの出し入れを、3 ターンの流れで確かめる。
-//   1 ターン目 雑談（切り替えない）          → 添え書きなし（まだ何も言っていないので、打ち消す必要がない）
-//   2 ターン目 実装（opus に切り替える）      → 「Opus が応答している」
-//   3 ターン目 雑談（切り替えない）          → 前の添え書きを打ち消す「切り替えなし」
-test('a chat turn adds no note until a switch happened', async ($, on) => {
-  let label = 'chat-or-question'
+//   1 ターン目 分類できない（切り替えない）   → 添え書きなし（まだ何も言っていないので、打ち消す必要がない）
+//   2 ターン目 実装（fable に切り替える）     → 「Fable が応答している」
+//   3 ターン目 分類できない（切り替えない）   → 前の添え書きを打ち消す「切り替えなし」
+test('an unswitched turn adds no note until a switch happened', async ($, on) => {
+  let label = 'banana'
   const seen = setup(on, () => label)
   await $.prompt.submit({ text: 'こんにちは' })
   expect(seen.context.length).toBe(0)
   label = 'implement-complex'
   await $.prompt.submit({ text: '決済 API に冪等キーを実装して' })
-  expect(seen.context[0]).toContain('Opus')
-  label = 'chat-or-question'
+  expect(seen.context[0]).toContain('Fable')
+  label = 'banana'
   await $.prompt.submit({ text: 'ありがとう' })
   expect(seen.context[0]).toContain('切り替えなし')
 })
@@ -163,7 +173,7 @@ test('a chat turn adds no note until a switch happened', async ($, on) => {
 // ---- 3. Haiku に渡すもの（判断基準と、直前の会話） ----
 
 // Haiku の呼び方: モデルは haiku、effort は low、返事は最大 20 トークン、10 秒で打ち切り。
-// システムプロンプト（判断基準）には、10 個のラベルがすべて入っている。
+// システムプロンプト（判断基準）には、11 個のラベルがすべて入っている。
 test('the classifier is called with haiku, low effort and the criteria', async ($, on) => {
   const seen = setup(on, () => 'chat-or-question')
   await $.prompt.submit({ text: 'こんにちは' })
@@ -175,7 +185,7 @@ test('the classifier is called with haiku, low effort and the criteria', async (
 })
 
 // 「続けて」だけのプロンプトでも、直前の会話を一緒に渡す。会話に設計の依頼があるので、
-// Haiku は設計（design-hardest）と判断でき、opus / xhigh になる。
+// Haiku は設計（design-hardest）と判断でき、fable / high になる。
 test('a short continuation is classified with the recent conversation', async ($, on) => {
   const seen = setup(on, () => 'design-hardest', () => [
     { role: 'user', text: '決済システムを設計して' },
@@ -187,8 +197,8 @@ test('a short continuation is classified with the recent conversation', async ($
   expect(seen.request.prompt).toContain('決済システムを設計して')
   expect(seen.request.prompt).toContain('<request>')
   expect(seen.request.prompt).toContain('続けて')
-  expect(seen.model).toBe('opus')
-  expect(seen.effort).toBe('xhigh')
+  expect(seen.model).toBe('fable')
+  expect(seen.effort).toBe('high')
 })
 
 // 渡す会話は、本文のある最後の 4 件まで。1 件は 500 文字で切る。
@@ -256,13 +266,13 @@ test('consecutive messages from one side count as one, so the window keeps two e
 // ---- 4. Haiku の返事が使えないとき ----
 // どの場合も、作業は止めない。切り替えずに、セッションのモデルで続ける。
 
-// 返事が「`implement-complex`。」のように余計な文字つきでも、ラベルを拾って opus / xhigh にする。
+// 返事が「`implement-complex`。」のように余計な文字つきでも、ラベルを拾って fable / medium にする。
 test('a reply with extra characters still matches', async ($, on) => {
   const seen = setup(on, () => ' `implement-complex`。\n')
   await $.prompt.submit({ text: '決済 API に冪等キーを実装して' })
   await step($)
-  expect(seen.model).toBe('opus')
-  expect(seen.effort).toBe('xhigh')
+  expect(seen.model).toBe('fable')
+  expect(seen.effort).toBe('medium')
 })
 
 // 返事にラベルがない（'banana'）→ 切り替えない。
@@ -271,6 +281,7 @@ test('an unknown reply keeps the session model', async ($, on) => {
   await $.prompt.submit({ text: '何か実装して' })
   await step($)
   expect(seen.model).toBe('sonnet')
+  expect(seen.context.length).toBe(0) // 切り替えていれば、添え書きがつく
 })
 
 // API が答えなかった（isAnswered: false）→ 切り替えない。
@@ -279,6 +290,7 @@ test('an unanswered request keeps the session model', async ($, on) => {
   await $.prompt.submit({ text: '何か実装して' })
   await step($)
   expect(seen.model).toBe('sonnet')
+  expect(seen.context.length).toBe(0) // 切り替えていれば、添え書きがつく
 })
 
 // Haiku の呼び出しが例外で失敗した → 切り替えない。
@@ -287,6 +299,7 @@ test('a failed classification falls back to the session model', async ($, on) =>
   await $.prompt.submit({ text: '何か実装して' })
   await step($)
   expect(seen.model).toBe('sonnet')
+  expect(seen.context.length).toBe(0) // 切り替えていれば、添え書きがつく
 })
 
 // 会話が読めなくても（session.messages が失敗）、今回のプロンプトだけで分類して、opus に切り替える。

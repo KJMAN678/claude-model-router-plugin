@@ -2,7 +2,7 @@
 
 この文書は、model-router プラグインが「どう動くか」「なぜその作りにしたか」を説明します。
 
-- 対象のバージョン: 0.3.0（`main` に入っている版）
+- 対象のバージョン: 0.4.0（判定基準を claude.dev の記事に合わせた版）
 - 設計の正式な記録は [spec](superpowers/specs/2026-11-10-model-router-design.md)。この文書は、読み物として書き直した解説です。
 - 使い方だけ知りたいときは、リポジトリ直下の [README](../README.md) を読んでください。
 
@@ -13,7 +13,7 @@ Claude Code に、プロンプトを送るたびに、次の 2 つを自動で�
 1. プロンプトの種類（設計・調査 / 実装 / レビュー / 雑談）と難易度を、**Haiku が分類する**。
 2. 分類の結果に応じて、**そのターンのメインのモデルと effort を切り替える**。
 
-たとえば、「複数リージョンの決済システムの設計方針を考えて」は Opus / xhigh、「README の誤字を直して」は Sonnet / high、「こんにちは」は切り替えなし、のようになります。元の要望は [docs/intent.md](intent.md) にあります。
+たとえば、「複数リージョンの決済システムの設計方針を考えて」は Fable / high、「README の誤字を直して」は Sonnet / high、「こんにちは」は Sonnet / medium、のようになります。元の要望は [docs/intent.md](intent.md) にあります。
 
 **やらないこと**
 - 切り替えは、そのターンだけです。次のプロンプトで、もう一度分類します。
@@ -136,28 +136,30 @@ const ROUTES: Record<string, Route | null> = {
   'design-simple':      { model: 'opus',   effort: 'medium' },
   'design-moderate':    { model: 'opus',   effort: 'high' },
   'design-complex':     { model: 'opus',   effort: 'high' },
-  'design-hardest':     { model: 'opus',   effort: 'xhigh' },
+  'design-hardest':     { model: 'fable',  effort: 'high' },
   'implement-simple':   { model: 'sonnet', effort: 'high' },
   'implement-moderate': { model: 'opus',   effort: 'high' },
-  'implement-complex':  { model: 'opus',   effort: 'xhigh' },
-  'review-standard':    { model: 'opus',   effort: 'xhigh' },
-  'review-deep':        { model: 'opus',   effort: 'xhigh' },
-  'chat-or-question':   null,   // 切り替えない
+  'implement-complex':  { model: 'fable',  effort: 'medium' },
+  'migration-or-optimization': { model: 'opus', effort: 'high' },
+  'review-standard':    { model: 'opus',   effort: 'high' },
+  'review-deep':        { model: 'opus',   effort: 'high' },
+  'chat-or-question':   { model: 'sonnet', effort: 'medium' },
 }
 const LABELS = Object.keys(ROUTES)
 ```
 
 - これが、振り分けのルールのすべてです。変えたいときは、この表を編集します。
 - キーの名前が、そのまま Haiku に渡す分類のラベルになります。各ラベルの判断基準は、同じファイルの `CRITERIA` に文章で書いてあり、Haiku にはそれをシステムプロンプトとして渡します（4.2）。
-- `null` は「切り替えない」で、そのターンは、セッションに設定されたモデルのまま動きます。
+- 分類に失敗したときは `null`（切り替えない）になり、そのターンは、セッションに設定されたモデルのまま動きます。
 
 | 種類 | 軽い | | | 重い |
 |--|--|--|--|--|
-| 設計・調査 | opus / medium | opus / high | opus / high | opus / xhigh |
-| 実装 | sonnet / high | opus / high | opus / xhigh | — |
-| レビュー | opus / xhigh | opus / xhigh | — | — |
+| 設計・調査 | opus / medium | opus / high | opus / high | fable / high |
+| 実装 | sonnet / high | opus / high | fable / medium | — |
+| 移行・性能最適化 | opus / high | — | — | — |
+| レビュー | opus / high | opus / high | — | — |
 
-この対応は、`docs/intent.md` の表をもとにしています。ただし、intent.md で Fable としていた複雑な設計と深いレビューは、Opus に替えています（`opus / high`、`opus / xhigh`）。**Fable は、プロンプトに「Fable で」と書いたときだけ使います**（4.2 の②）。
+この対応は、`docs/intent.md` の表をもとに、claude.dev の記事「Which Claude model should you build with?」（2026-11-09）に合わせて見直しています（0.4.0）。既定は Opus、仕様が明確な作業は Sonnet、最も難しい作業は Fable です。Opus は high より上げず（xhigh は使わない）、先に Fable を使います。Fable は、最難関の `design-hardest` と `implement-complex`、およびプロンプトに「Fable で」と書いたとき（4.2 の②）に使います。
 
 ### 4.2 判定の優先順位（`prompt.submit`）
 
@@ -253,19 +255,20 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 | 種類 | 実行 | 内容 |
 |--|--|--|
 | 静的な確認 | `python3 -m unittest discover tests` | plugin.json と marketplace.json の整合、`hooks.json` が mod だけを読むこと、`register.ts` が 2 つのフックを持つこと |
-| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 18 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
+| mod の単体テスト | `claude plugin test .` | Haiku の返事と会話を差し替えて、下の 19 ケースを確かめる。API は呼ばない。2.1.321 以上が必要 |
 | 検証 | `claude plugin validate .` | `prompt.submit` と `turn.step` を hook し、`$.model.complete`、`$.session.messages`、`$.ui.status` を呼ぶことの確認 |
 
-`claude plugin test` の 18 ケース（`hooks/register.test.ts`）:
+`claude plugin test` の 19 ケース（`hooks/register.test.ts`）:
 
-1. レビューのプロンプトで、Opus / xhigh に切り替わる
-2. どのラベルでも、分類の結果は Fable にならない（Fable は明示したときだけ）
-3. 雑談では、切り替えない
+1. レビューのプロンプトで、Opus / high に切り替わる
+2. Fable になるのは、最難関の 2 つのラベル（design-hardest、implement-complex）だけ
+3. 雑談では、Sonnet / medium に切り替わる
+3-2. 移行・性能最適化のプロンプトで、Opus / high に切り替わる
 4. 明示したモデルは、分類より優先される（Haiku を呼ばない）
 5. subagent のステップは、書き換えない
 6. 分類が失敗したら、切り替えない
 7. 切り替えたターンに、名乗りの添え書きがつく
-8. 雑談のターンには、切り替えるまで添え書きがつかず、切り替えたあとの雑談では打ち消しの添え書きがつく
+8. 切り替えないターンには、切り替えるまで添え書きがつかず、切り替えたあとの切り替えないターンでは打ち消しの添え書きがつく
 9. Haiku を、effort low、最大 20 トークン、10 秒までで呼び、システムプロンプトにすべてのラベルの基準が入る
 10. 「続けて」は、直前の会話とともに分類に渡り、直前と同じ作業として切り替わる
 11. 会話は、本文のある最後の 4 件だけを、各 500 文字までで渡す
@@ -306,7 +309,7 @@ $.ui.status(pick ? `このターン: ${NAMES[pick.model] ?? pick.model} / ${pick
 | 新しく開いたセッションに、インストールした版で「Fable で、一言あいさつして」 | fable / high | fable-5-2 / high |
 
 **確認できていないこと**
-- 0.3.0 の分類（判断基準と直前の会話を渡す方式）の実機での精度。実装・レビューの分類と、「続けて」の扱いは、単体テストでは通っているが、実機では試していない
+- 0.4.0 の判定基準（Fable の最難関への割り当て、`migration-or-optimization` ラベル、雑談の Sonnet / medium）の実機での確認。0.3.0 の分類（判断基準と直前の会話を渡す方式）の精度も含め、単体テストでは通っているが、実機では試していない
 - auto モードでの動き、CLI（`claude -p`）での動き
 - 切り替えによる費用の増減（測っていない）
 

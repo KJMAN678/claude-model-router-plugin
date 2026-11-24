@@ -18,13 +18,15 @@ claude --plugin-dir <このリポジトリ>
 
 | 種類 | 軽い | | | 重い |
 |--|--|--|--|--|
-| 設計・調査 | opus / medium | opus / high | opus / high | opus / xhigh |
-| 実装 | sonnet / high | opus / high | opus / xhigh | — |
-| レビュー | opus / xhigh | opus / xhigh | — | — |
+| 設計・調査 | opus / medium | opus / high | opus / high | fable / high |
+| 実装 | sonnet / high | opus / high | fable / medium | — |
+| 移行・性能最適化 | opus / high | — | — | — |
+| レビュー | opus / high | opus / high | — | — |
 
-- 雑談や短い質問は、切り替えません（セッションのモデルのまま）。
+- 雑談や短い質問は、sonnet / medium に切り替えます。
+- 基準は [Which Claude model should you build with?](https://claude.dev/blog/which-claude-model-should-you-build-with/) に沿っています。既定は Opus、仕様が明確な作業は Sonnet、最も難しい作業は Fable です。Opus は high より上げず、先に Fable を使います。
 - 判定結果は、ステータス行に `このターン: Opus / high（画面のモデル表示とは別）` の形で出ます。画面のモデル表示は、セッションに設定されたモデルのままです。
-- 「Fable で」「opus を使って」のようにモデルを書けば、分類より優先されます（effort は high）。**Fable は、この書き方をしたときだけ使います。** 分類の結果では、Fable に切り替えません。
+- 「Fable で」「opus を使って」のようにモデルを書けば、分類より優先されます（effort は high）。**Fable は、この書き方をしたときと、分類が最難関（design-hardest、implement-complex）のときに使います。**
 - 「続けて」「そこを直して」のような短い続きは、Haiku が直前の会話を見て、同じ作業として分類します。
 - 分類に失敗したときは、切り替えずにセッションのモデルで続けます。
 - subagent の作業には手を出しません。
@@ -48,3 +50,8 @@ claude plugin test .
 ```
 
 `claude plugin test` は、新しい Claude Code（2.1.321 で確認、2.1.261 にはありません）が必要です。API は呼びません（分類結果は、テストの中で差し替えています）。実機の確認は、プラグインを入れたセッションにプロンプトを送り、セッション記録の `requestedModel` と `effort` を見てください。
+
+## 参照
+
+- [Which Claude model should you build with? Fable, Opus, Sonnet, or Haiku](https://claude.dev/blog/which-claude-model-should-you-build-with/)
+- [週間制限に3日で到達していたClaudeが、ModelとEffortの使い分けで5日持つようになった話](https://zenn.dev/sun_asterisk/articles/1d1c65b1fe409a)
